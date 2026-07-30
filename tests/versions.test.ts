@@ -659,8 +659,11 @@ describe('acceptance scenario 6: publishing gates what low-privilege roles see',
       })),
     )
 
-    // Regenerate: the draft changes, the published version must not.
-    await gen(owner, { commit: true, config: { seed: 99, roundRobinTimes: 1 } })
+    // Regenerate: the draft changes, the published version must not. The change is a
+    // second pass rather than a different seed — with four teams and two fields a new
+    // seed can legitimately land on the same six fixtures, which would make the last
+    // assertion in this test fail for a reason that is not a bug.
+    await gen(owner, { commit: true, config: { seed: 1, roundRobinTimes: 2 } })
 
     const asCoach = await games(coach)
     expect(asCoach.body.source).toBe('published')
@@ -671,6 +674,7 @@ describe('acceptance scenario 6: publishing gates what low-privilege roles see',
     // The draft has moved on, and only privileged roles can see that.
     const asOwner = await games(owner)
     expect(asOwner.body.source).toBe('live')
+    expect(asOwner.body.games).toHaveLength(12)
     expect(signature(asOwner.body.games)).not.toEqual(v1Signature)
   })
 

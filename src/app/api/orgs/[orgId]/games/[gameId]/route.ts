@@ -4,7 +4,7 @@ import { updateGameSchema } from '@/lib/validation'
 import { softDeleteWithAudit, updateWithAudit } from '@/lib/crud'
 import { assertFieldInOrg, assertGameInOrg } from '@/lib/scope'
 import { detectGameConflicts } from '@/lib/conflicts'
-import { formatInstantInZone } from '@/lib/time'
+import { formatInstantInZone, parseCalendarDate, parseTimeOfDay, slotInstant } from '@/lib/time'
 import type { Game } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; gameId: string }> }
@@ -81,15 +81,16 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
   if (patch.fieldId) await assertFieldInOrg(orgId, patch.fieldId)
 
   const fieldId = patch.fieldId !== undefined ? (patch.fieldId ?? null) : before.fieldId
-  const startTime = patch.startTime ? new Date(patch.startTime) : before.startTime
+  const startTime = await resolveStartTime(orgId, patch, before, fieldId)
   const durationMinutes = patch.durationMinutes ?? before.durationMinutes
   const status = patch.status ?? before.status
 
   // Only re-check when the placement actually moves. A score entry does not need
   // to pass a double-booking check.
+  const placementMoved = startTime.getTime() !== before.startTime.getTime()
   const placementChanged =
     fieldId !== before.fieldId ||
-    startTime.getTime() !== before.startTime.getTime() ||
+    placementMoved ||
     durationMinutes !== before.durationMinutes ||
     status !== before.status
 
@@ -129,7 +130,7 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
         where: { id: gameId },
         data: {
           ...(patch.fieldId !== undefined ? { fieldId: patch.fieldId ?? null } : {}),
-          ...(patch.startTime !== undefined ? { startTime } : {}),
+          ...(placementMoved ? { startTime } : {}),
           ...(patch.durationMinutes !== undefined ? { durationMinutes } : {}),
           ...(patch.status !== undefined ? { status: patch.status } : {}),
           ...(patch.homeScore !== undefined ? { homeScore: patch.homeScore ?? null } : {}),
@@ -142,6 +143,38 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
 
   return Response.json({ game: { id: game.id, ...snapshot(game) }, conflicts })
 })
+
+/**
+ * Works out the instant a patch means.
+ *
+ * `startTime` is already an instant and wins. `localDate`/`localTime` are a wall-clock
+ * reading, and the zone they are read in is the *target* field's — so moving a game
+ * from a Pacific venue to a Mountain one at "9:00" keeps 9:00 local and changes the
+ * UTC instant, which is what an operator picking a time on a form means. With no field
+ * the org's zone stands in.
+ */
+async function resolveStartTime(
+  orgId: string,
+  patch: { startTime?: string; localDate?: string; localTime?: string },
+  before: { startTime: Date },
+  fieldId: string | null,
+): Promise<Date> {
+  if (patch.startTime) return new Date(patch.startTime)
+  if (!patch.localDate || !patch.localTime) return before.startTime
+
+  const timezone = fieldId
+    ? (
+        await prisma.field.findFirstOrThrow({
+          where: { id: fieldId, deletedAt: null },
+          select: { venue: { select: { timezone: true } } },
+        })
+      ).venue.timezone
+    : (await prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { timezone: true } }))
+        .timezone
+
+  const date = parseCalendarDate(patch.localDate)
+  return slotInstant(date, parseTimeOfDay(patch.localTime), timezone)
+}
 
 export const DELETE = handler<Ctx>(async (req, ctx) => {
   const { orgId, gameId } = await ctx.params

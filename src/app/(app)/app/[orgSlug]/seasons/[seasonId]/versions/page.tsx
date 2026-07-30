@@ -55,6 +55,13 @@ export default async function VersionsPage({
             {season.publishedVersion.publishedAt &&
               `, published ${new Date(season.publishedVersion.publishedAt).toLocaleString()}`}
             . Draft changes stay invisible to them until you publish again.
+            <div className="mt-2">
+              Public link:{' '}
+              <Link href={`/s/${orgSlug}?seasonId=${seasonId}`} className="underline">
+                /s/{orgSlug}
+              </Link>{' '}
+              — readable with no account, and serves this version only.
+            </div>
           </Alert>
         ) : (
           <Alert kind="info">

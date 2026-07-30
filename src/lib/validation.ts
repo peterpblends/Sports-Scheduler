@@ -368,6 +368,14 @@ export const createGameSchema = z.object({
 export const updateGameSchema = z.object({
   fieldId: z.string().min(1).nullish(),
   startTime: z.string().datetime({ offset: true }).optional(),
+  /**
+   * A kickoff as a human typed it: the wall clock at the venue. The endpoint converts
+   * it in the *target* field's zone, so moving a game between venues keeps the local
+   * time the operator chose rather than the instant. Pass with `localTime`; ignored
+   * when `startTime` is given, which is already an instant.
+   */
+  localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  localTime: z.string().regex(/^\d{1,2}:\d{2}$/).optional(),
   durationMinutes: z.number().int().min(5).max(600).optional(),
   status: gameStatusSchema.optional(),
   homeScore: z.number().int().min(0).max(999).nullish(),

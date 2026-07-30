@@ -6,6 +6,7 @@ import { can } from '@/lib/authz'
 import { staffTeamIds } from '@/lib/scope'
 import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'
 import { CreateForm, Disclosure, RemoveButton } from '@/components/crud-forms'
+import { RosterImport } from '@/components/roster-import'
 
 export default async function TeamPage({
   params,
@@ -241,6 +242,12 @@ export default async function TeamPage({
           )}
         </Card>
       </div>
+
+      {canEdit && (
+        <div className="mt-4">
+          <RosterImport orgId={orgId} teamId={teamId} teamName={team.name} />
+        </div>
+      )}
     </>
   )
 }

@@ -3,13 +3,21 @@ import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
-import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'
+import { Alert, Card, PageHeader } from '@/components/ui'
 import { EntityHistory } from '@/components/activity-feed'
-import { formatInstantInZone } from '@/lib/time'
+import { GameEditor, OfficialsPanel } from '@/components/game-editor'
+import { refereeForUser } from '@/lib/scope'
+import {
+  calendarDateInZone,
+  formatCalendarDate,
+  formatInstantInZone,
+  formatTimeOfDay,
+  minutesFromMidnightInZone,
+} from '@/lib/time'
 
 /**
- * Game detail, with the per-entity history panel the spec asks for: who changed this
- * game and when, including any override reason that was recorded at the time.
+ * Game detail: the editor, the crew, and the per-entity history the spec asks for —
+ * who changed this game and when, including any override reason recorded at the time.
  */
 export default async function GamePage({
   params,
@@ -17,7 +25,7 @@ export default async function GamePage({
   params: Promise<{ orgSlug: string; gameId: string }>
 }) {
   const { orgSlug, gameId } = await params
-  const { role, orgId } = await requireOrgAccess(orgSlug, 'schedule:read:published')
+  const { role, orgId, actor } = await requireOrgAccess(orgSlug, 'schedule:read:published')
 
   const game = await prisma.game.findFirst({
     where: {
@@ -50,23 +58,40 @@ export default async function GamePage({
     if (!season.publishedVersionId) notFound()
   }
 
-  const history = await prisma.auditEvent.findMany({
-    where: { entityType: 'Game', entityId: gameId },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
-  })
+  const canEdit = can(role, 'schedule:edit')
+  const canAssign = can(role, 'official:assign')
 
-  const officialHistory = await prisma.auditEvent.findMany({
-    where: {
-      entityType: 'GameOfficial',
-      orgId,
-      meta: { path: ['gameId'], equals: gameId },
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 100,
-  })
+  const [history, officialHistory, fields, ownReferee, org] = await Promise.all([
+    prisma.auditEvent.findMany({
+      where: { entityType: 'Game', entityId: gameId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
+    prisma.auditEvent.findMany({
+      where: {
+        entityType: 'GameOfficial',
+        orgId,
+        meta: { path: ['gameId'], equals: gameId },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    }),
+    canEdit
+      ? prisma.field.findMany({
+          where: { deletedAt: null, venue: { orgId, deletedAt: null } },
+          orderBy: [{ venue: { name: 'asc' } }, { name: 'asc' }],
+          include: { venue: { select: { name: true, timezone: true } } },
+        })
+      : Promise.resolve([]),
+    can(role, 'official:respond:own') ? refereeForUser(actor.userId, orgId) : Promise.resolve(null),
+    prisma.organization.findUniqueOrThrow({ where: { id: orgId }, select: { timezone: true } }),
+  ])
 
-  const timezone = game.field?.venue.timezone ?? null
+  const timezone = game.field?.venue.timezone ?? org.timezone
+
+  const ownAssignmentIds = ownReferee
+    ? game.officials.filter((official) => official.refereeId === ownReferee.id).map((o) => o.id)
+    : []
 
   return (
     <>
@@ -95,43 +120,32 @@ export default async function GamePage({
         <Card>
           <h2 className="text-base font-semibold">Details</h2>
           <dl className="mt-3 space-y-2 text-sm">
-            <div className="flex justify-between gap-4">
-              <dt className="text-ink-500 dark:text-ink-400">Kickoff</dt>
-              <dd className="text-right">
-                {timezone ? formatInstantInZone(game.startTime, timezone) : game.startTime.toISOString()}
-                <div className="text-xs text-ink-500 dark:text-ink-400">
-                  {game.durationMinutes} minutes
-                  {timezone && ` · ${timezone}`}
-                </div>
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-ink-500 dark:text-ink-400">Where</dt>
-              <dd className="text-right">
-                {game.field ? (
-                  <>
-                    {game.field.venue.name}
-                    <div className="text-xs text-ink-500 dark:text-ink-400">{game.field.name}</div>
-                  </>
-                ) : (
-                  <span className="text-amber-700 dark:text-amber-300">not placed</span>
-                )}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-ink-500 dark:text-ink-400">Status</dt>
-              <dd>
-                <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs dark:bg-ink-900">
-                  {game.status}
-                </span>
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-ink-500 dark:text-ink-400">Score</dt>
-              <dd className="tabular-nums">
+            <Row label="Kickoff">
+              {formatInstantInZone(game.startTime, timezone)}
+              <div className="text-xs text-ink-500 dark:text-ink-400">
+                {game.durationMinutes} minutes · {timezone}
+              </div>
+            </Row>
+            <Row label="Where">
+              {game.field ? (
+                <>
+                  {game.field.venue.name}
+                  <div className="text-xs text-ink-500 dark:text-ink-400">{game.field.name}</div>
+                </>
+              ) : (
+                <span className="text-amber-700 dark:text-amber-300">not placed</span>
+              )}
+            </Row>
+            <Row label="Status">
+              <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs dark:bg-ink-900">
+                {game.status}
+              </span>
+            </Row>
+            <Row label="Score">
+              <span className="tabular-nums">
                 {game.homeScore === null ? '—' : `${game.homeScore}–${game.awayScore}`}
-              </dd>
-            </div>
+              </span>
+            </Row>
           </dl>
           {game.notes && (
             <p className="mt-3 border-t border-ink-200 pt-3 text-sm text-ink-600 dark:border-ink-700 dark:text-ink-300">
@@ -140,31 +154,44 @@ export default async function GamePage({
           )}
         </Card>
 
-        <Card>
-          <h2 className="text-base font-semibold">Officials</h2>
-          {game.officials.length === 0 ? (
-            <div className="mt-3">
-              <EmptyState>Nobody assigned yet.</EmptyState>
-            </div>
-          ) : (
-            <ul className="mt-3 divide-y divide-ink-200 text-sm dark:divide-ink-700">
-              {game.officials.map((official) => (
-                <li key={official.id} className="flex items-center justify-between gap-3 py-2">
-                  <Link
-                    href={`/app/${orgSlug}/people/${official.referee.person.id}`}
-                    className="font-medium text-turf-600 hover:underline"
-                  >
-                    {official.referee.person.name}
-                  </Link>
-                  <span className="text-xs text-ink-500 dark:text-ink-400">
-                    {official.position} · {official.status}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+        <OfficialsPanel
+          orgId={orgId}
+          gameId={gameId}
+          canAssign={canAssign}
+          ownAssignmentIds={ownAssignmentIds}
+          assignments={game.officials.map((official) => ({
+            id: official.id,
+            refereeName: official.referee.person.name,
+            position: official.position,
+            status: official.status,
+          }))}
+        />
       </div>
+
+      {canEdit && (
+        <div className="mt-4">
+          <GameEditor
+            orgId={orgId}
+            gameId={gameId}
+            timezone={timezone}
+            initial={{
+              localDate: formatCalendarDate(calendarDateInZone(game.startTime, timezone)),
+              localTime: formatTimeOfDay(minutesFromMidnightInZone(game.startTime, timezone)),
+              fieldId: game.fieldId,
+              durationMinutes: game.durationMinutes,
+              status: game.status,
+              homeScore: game.homeScore,
+              awayScore: game.awayScore,
+              notes: game.notes,
+            }}
+            fields={fields.map((field) => ({
+              id: field.id,
+              label: `${field.venue.name} — ${field.name}`,
+              timezone: field.venue.timezone,
+            }))}
+          />
+        </div>
+      )}
 
       {can(role, 'audit:read') ? (
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -210,5 +237,14 @@ export default async function GamePage({
         </div>
       )}
     </>
+  )
+}
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-ink-500 dark:text-ink-400">{label}</dt>
+      <dd className="text-right">{children}</dd>
+    </div>
   )
 }
