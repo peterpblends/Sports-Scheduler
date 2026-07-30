@@ -71,11 +71,19 @@ export default async function SeasonPage({
         }
       />
 
-      <p className="mb-6 text-sm">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 text-sm">
         <Link href={`/app/${orgSlug}/leagues`} className="text-ink-500 hover:underline dark:text-ink-300">
           ← All leagues
         </Link>
-      </p>
+        {can(role, 'schedule:generate') && (
+          <Link
+            href={`/app/${orgSlug}/seasons/${seasonId}/generate`}
+            className="font-medium text-turf-600 hover:underline"
+          >
+            Generate schedule →
+          </Link>
+        )}
+      </div>
 
       {canEditStructure && (
         <Card className="mb-6">

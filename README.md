@@ -4,9 +4,9 @@ League scheduling for any sport: define teams, people, venues, officials and rul
 generate a season schedule that respects every hard constraint, then review,
 publish and roll back with a full audit trail.
 
-**Status: Phases 1 and 2 complete** — auth and accounts, and the core data model with
-its CRUD surface, conflict checking and setup UI. Phases 3–6 — scheduling engine,
-revision history, full UI, and import/export/notifications — are next.
+**Status: Phases 1–3 complete** — auth and accounts, the core data model with its CRUD
+surface and conflict checking, and the scheduling engine. Phases 4–6 — revision
+history, full UI, and import/export/notifications — are next.
 
 ## Stack
 
@@ -204,6 +204,80 @@ overrode** on the audit event — the "warn, but let an admin override with a lo
 reason" rule. Cancelled and postponed games release their slot; a score-only edit
 skips the placement re-check.
 
+## Scheduling engine
+
+[`src/lib/scheduler/`](src/lib/scheduler) is a **pure function**: config and entities
+in, games out. No database, no clock, no `Math.random()`. That is what makes it
+testable from fixtures and what makes non-negotiable #5 — same config, same seed, same
+schedule — an assertion rather than a hope. `src/lib/scheduler/db.ts` is the only file
+in the directory that knows Prisma exists.
+
+```ts
+const result = generateSchedule({ config, season, divisions, fields, referees, blackouts })
+//    result.games, result.assignments, result.byes, result.report
+```
+
+A run goes: resolve config and seed the RNG → expand field availability rules into
+concrete UTC slots → build the fixture list from the round robin → drop fixtures a
+regeneration must leave alone → place fixtures into slots → assign officials →
+optionally reserve playoff slots → report what was relaxed.
+
+### Hard versus soft
+
+**Hard constraints are absolute.** Field double-booking, a team in two places at once,
+field availability windows, blackouts at all four scopes, the per-team game caps, and
+every officiating rule. A slot that violates one is never offered to the placement
+search, so an illegal schedule cannot be emitted. When a fixture has no legal slot
+left it is **reported as unplaced**, never forced.
+
+**Soft constraints are scored.** Each candidate slot gets a cost — home/away balance,
+repeat opponents, time-of-day rotation, venue spread, rest days, home-venue preference,
+sibling proximity, and staying near the intended round — and the cheapest legal slot
+wins. Whatever cost survives is what the report describes.
+
+### The report
+
+`result.report.softConstraints` answers the spec's question directly: for each
+constraint, whether it was relaxed, by how much in its own units, and which teams were
+affected. Alongside it: per-team games / home / away / byes / shortest rest / time-slot
+spread, unplaced fixtures with the binding constraint named, unfilled officiating
+positions with the reason, officiating load and pay per official, and plain-language
+notes about anything the generator had to derive.
+
+### Officials
+
+An official is assigned only if they clear all four rules: availability (no blackout,
+inside a declared weekly window), their daily cap counted in the venue's local day, no
+overlapping assignment and enough travel time between venues, and no conflict of
+interest — on either team, or related to someone who is. Among those who qualify the
+choice balances load then pay, so both the work and the money spread across the pool.
+
+### Placement search
+
+Greedy, with backtracking, as the spec suggests — no constraint solver. Fixtures are
+placed in round order into their cheapest legal slot; when one has nowhere to go the
+search unwinds and tries the next-best slot for an earlier fixture. `maxBacktrackSteps`
+bounds the work so generation always terminates, and the report says when the budget
+was reached. A fixture proven unplaceable is set aside and the pass restarts without
+it, which keeps the search obviously correct rather than splicing a half-unwound stack.
+
+### Generating from the app
+
+`POST /api/orgs/:orgId/seasons/:seasonId/generate` requires `schedule:generate`.
+It defaults to a **dry run**: the engine executes, the report and full game list come
+back, and nothing is written. Passing `commit: true` writes the schedule in one
+transaction — preserved games are left exactly where they are, the rest are
+soft-deleted into history, and a single `schedule.generated` audit event records the
+config, the seed, the counts and which soft constraints were relaxed.
+
+### A note on capacity
+
+The engine will tell you when a season is over-subscribed rather than quietly dropping
+fixtures. A 9-team double round robin is 72 games, 16 per team; twelve Saturdays at the
+default one game per team per day allows 12 per team, so 48 fit and 24 do not. Raising
+`maxGamesPerTeamPerDay` to 2 for Saturday double-headers fits all 72. Both cases are
+covered in the tests.
+
 ## Timezones
 
 Two kinds of value exist and [`src/lib/time.ts`](src/lib/time.ts) keeps them apart:
@@ -234,11 +308,11 @@ Getting this right up front was deliberate; it is painful to retrofit.
 npm test
 ```
 
-139 tests across seven files, running against real Postgres so every authorization
-path is exercised as deployed. Route handlers read cookies from the `Request` and
-write them onto the `Response` rather than going through `next/headers`, which keeps
-each one a pure `Request -> Response` function that tests can call directly without
-booting Next.
+222 tests across nine files. The engine tests run purely off fixtures; the rest run
+against real Postgres so every authorization path is exercised as deployed. Route
+handlers read cookies from the `Request` and write them onto the `Response` rather
+than going through `next/headers`, which keeps each one a pure `Request -> Response`
+function that tests can call directly without booting Next.
 
 - **`tests/authz.test.ts`** — the permission matrix and role-assignment rules.
 - **`tests/auth-flows.test.ts`** — signup, login, logout, reset, change-password,
@@ -261,6 +335,14 @@ booting Next.
   enforcement on the phase 2 endpoints.
 - **`tests/conflicts.test.ts`** — every hard constraint, the override-with-reason
   flow and its audit record, and the officiating rules from acceptance scenario 3.
+- **`tests/scheduler.test.ts`** — the engine, from fixtures with no database. Includes
+  the four cases non-negotiable #4 asks for (odd team count, single venue with tight
+  slots, a referee with heavy blackouts, mid-season regeneration preserving played
+  games) and the idempotence guarantee of non-negotiable #5.
+- **`tests/generate-endpoint.test.ts`** — the database adapter and commit path: a dry
+  run writes nothing, committing retires the previous schedule into history rather
+  than deleting it, played games survive a regeneration untouched, and real blackouts
+  and conflict-of-interest links reach the engine.
 
 ## Project layout
 
@@ -279,6 +361,17 @@ src/
     authz.ts             role -> permission matrix, escalation rules
     scope.ts             assert*InOrg tenant scoping; own-team / own-assignment scope
     conflicts.ts         hard-constraint checking for one game placement
+    scheduler/           the engine — pure; db.ts is its only Prisma boundary
+      types.ts             config and entity inputs, result and report shapes
+      config.ts            defaults, normalization, wire-format schema
+      random.ts            seeded PRNG, so generation is reproducible
+      slots.ts             availability rules -> concrete UTC candidate slots
+      pairings.ts          round robin, byes, home/away orientation, cross-division
+      placement.ts         greedy placement with backtracking; hard vs soft
+      officials.ts         referee assignment and load/pay balancing
+      playoffs.ts          standings and elimination brackets
+      report.ts            what was relaxed, by how much, for which teams
+      db.ts                loads a season out of Postgres into the pure input
     time.ts              UTC instants vs local wall-clock rules, zone conversion
     http.ts              requirePermission / requireActor, error mapping
     crud.ts              write + audit in one transaction; soft delete; name uniqueness
@@ -311,9 +404,6 @@ serialization traps.
 
 ## Roadmap
 
-- **Phase 3** — the scheduling engine: a pure function (config + entities in,
-  games out) with hard constraints never violated and soft constraints scored and
-  reported.
 - **Phase 4** — schedule versions, side-by-side diffs, restore-as-new-version,
   per-entity history, activity feed, explicit publishing.
 - **Phase 5** — dashboard, setup wizard, calendar/list/per-team views,
