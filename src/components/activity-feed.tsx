@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/client'
+import { formatInstantInZone } from '@/lib/time'
 import { Alert, Card, EmptyState, inputClass, secondaryButtonClass } from './ui'
 
 type ActivityEvent = {
@@ -29,9 +30,19 @@ function describeAction(action: string): string {
   return (rest.join('.') || action).replace(/_/g, ' ')
 }
 
-function renderValue(value: unknown): string {
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+
+/**
+ * Audit rows store instants as UTC ISO strings, which is right for the record and wrong
+ * for a reader. Given a zone, an instant renders in it — same rule as everywhere else
+ * in the app. Without one, the ISO string stands.
+ */
+function renderValue(value: unknown, timeZone?: string | null): string {
   if (value === null || value === undefined) return '—'
-  if (typeof value === 'string') return value
+  if (typeof value === 'string') {
+    if (timeZone && ISO_INSTANT.test(value)) return formatInstantInZone(new Date(value), timeZone)
+    return value
+  }
   return JSON.stringify(value)
 }
 
@@ -243,6 +254,7 @@ export function ActivityFeed({ orgId }: { orgId: string }) {
  */
 export function EntityHistory({
   events,
+  timeZone,
 }: {
   events: Array<{
     id: string
@@ -252,6 +264,8 @@ export function EntityHistory({
     diff: unknown
     meta: unknown
   }>
+  /** The entity's own zone — a game's is its venue's. Instants render in it. */
+  timeZone?: string | null
 }) {
   if (events.length === 0) {
     return <EmptyState>No changes recorded yet.</EmptyState>
@@ -279,8 +293,9 @@ export function EntityHistory({
               <ul className="mt-1 space-y-0.5 text-xs text-ink-500 dark:text-ink-400">
                 {changes.map(([field, change]) => (
                   <li key={field}>
-                    <span className="font-mono">{field}</span>: {renderValue(change.before)}{' '}
-                    <span aria-hidden>→</span> {renderValue(change.after)}
+                    <span className="font-mono">{field}</span>:{' '}
+                    {renderValue(change.before, timeZone)} <span aria-hidden>→</span>{' '}
+                    {renderValue(change.after, timeZone)}
                   </li>
                 ))}
               </ul>

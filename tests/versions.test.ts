@@ -134,6 +134,20 @@ beforeEach(async () => {
   }
 })
 
+/**
+ * A crew of officials, created per-test rather than in the shared fixture so the
+ * game-count expectations elsewhere in this file stay as they were.
+ */
+async function seedOfficials(count = 3) {
+  const ids: string[] = []
+  for (let i = 0; i < count; i++) {
+    const person = await createPerson(owner, org.id, `Official ${i + 1}`)
+    const referee = await createReferee(owner, org.id, person.id)
+    ids.push(referee.id)
+  }
+  return ids
+}
+
 // ---------------------------------------------------------------------------
 // The pure diff
 // ---------------------------------------------------------------------------
@@ -440,6 +454,79 @@ describe('acceptance scenario 5: regenerate, diff, restore', () => {
     // Nothing in the audit log was overwritten: the v1 generation event still says 6.
     const firstGeneration = trail.find((event) => event.action === 'schedule.generated')!
     expect((firstGeneration.meta as Record<string, unknown>).note).toBe('first cut')
+  })
+
+  it('records a per-entity audit event for every game and official a generation writes', async () => {
+    await seedOfficials()
+    await gen(owner, { commit: true, config: { seed: 7, roundRobinTimes: 1 } })
+
+    const games = await prisma.game.findMany({ where: { deletedAt: null }, select: { id: true } })
+    const officials = await prisma.gameOfficial.findMany({
+      where: { deletedAt: null },
+      select: { gameId: true },
+    })
+    expect(games.length).toBeGreaterThan(0)
+    expect(officials.length).toBeGreaterThan(0)
+
+    // A generated game is a created entity, so it has its own history — the season-level
+    // event is not a substitute for it.
+    const created = await prisma.auditEvent.findMany({
+      where: { orgId: org.id, entityType: 'Game', action: 'game.created' },
+    })
+    expect(created.map((event) => event.entityId).sort()).toEqual(
+      games.map((game) => game.id).sort(),
+    )
+
+    const assigned = await prisma.auditEvent.findMany({
+      where: { orgId: org.id, entityType: 'GameOfficial', action: 'official.assigned' },
+    })
+    expect(assigned).toHaveLength(officials.length)
+
+    // The diff a person reads names the field and the crew rather than quoting cuids.
+    const sample = created[0]!.diff as Record<string, { before: unknown; after: unknown }>
+    expect(Object.keys(sample).sort()).toEqual(['kickoff', 'match', 'round', 'where'])
+    expect(sample.match!.after).toMatch(/ v /)
+    expect(String(sample.where!.after ?? '')).not.toMatch(/^c[a-z0-9]{24}/)
+    expect((assigned[0]!.diff as Record<string, { after: unknown }>).official!.after).not.toMatch(
+      /^c[a-z0-9]{24}/,
+    )
+  })
+
+  it('audits the officiating crew a restore re-creates, not just the games', async () => {
+    await seedOfficials()
+    const first = await gen(owner, { commit: true, config: { seed: 11, roundRobinTimes: 1 } })
+    const officialsInV1 = await prisma.gameOfficial.count({ where: { deletedAt: null } })
+    expect(officialsInV1).toBeGreaterThan(0)
+
+    // Wipe the working set, then bring v1 back.
+    await gen(owner, { commit: true, config: { seed: 12, roundRobinTimes: 1 } })
+    await restoreVersionCall(owner, first.body.version.id)
+
+    const restoredGames = await prisma.game.findMany({
+      where: { deletedAt: null },
+      select: { id: true },
+    })
+    const restoredOfficials = await prisma.gameOfficial.findMany({
+      where: { deletedAt: null, gameId: { in: restoredGames.map((g) => g.id) } },
+    })
+    expect(restoredOfficials.length).toBeGreaterThan(0)
+
+    const restoreAudit = await prisma.auditEvent.findMany({
+      where: {
+        orgId: org.id,
+        entityType: 'GameOfficial',
+        action: 'official.assigned',
+        entityId: { in: restoredGames.map((g) => g.id) },
+      },
+    })
+    expect(restoreAudit).toHaveLength(restoredOfficials.length)
+    expect((restoreAudit[0]!.meta as Record<string, unknown>).via).toBe('restore')
+
+    // Every restored game carries its own event too.
+    const gameAudit = await prisma.auditEvent.findMany({
+      where: { orgId: org.id, action: 'game.restored' },
+    })
+    expect(gameAudit.map((e) => e.entityId).sort()).toEqual(restoredGames.map((g) => g.id).sort())
   })
 
   it('soft-deletes replaced games rather than dropping them', async () => {

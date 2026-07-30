@@ -143,6 +143,26 @@ async function commitSchedule(input: {
       await tx.game.updateMany({ where: { id: { in: staleIds } }, data: { deletedAt: now } })
     }
 
+    // Labels for the audit diffs. The history panel is read by a person, so an event
+    // says "Riverside Park · Field 1" rather than a cuid; the ids still go in meta.
+    const [fields, teams, referees] = await Promise.all([
+      tx.field.findMany({
+        where: { venue: { orgId } },
+        select: { id: true, name: true, venue: { select: { name: true } } },
+      }),
+      tx.team.findMany({
+        where: { division: { season: { league: { orgId } } } },
+        select: { id: true, name: true },
+      }),
+      tx.referee.findMany({
+        where: { person: { orgId } },
+        select: { id: true, person: { select: { name: true } } },
+      }),
+    ])
+    const fieldLabels = new Map(fields.map((f) => [f.id, `${f.venue.name} · ${f.name}`]))
+    const teamNames = new Map(teams.map((t) => [t.id, t.name]))
+    const refereeNames = new Map(referees.map((r) => [r.id, r.person.name]))
+
     // Insert the new games, keeping the engine's index order so assignments line up.
     const createdIds: (string | null)[] = []
     // One audit event per game, batched. A generated game is a created entity, so it
@@ -184,9 +204,15 @@ async function commitSchedule(input: {
         entityId: created.id,
         action: 'game.created',
         diff: {
-          startTime: { before: null, after: game.startTime.toISOString() },
-          fieldId: { before: null, after: game.fieldId },
-          roundNumber: { before: null, after: game.roundNumber },
+          kickoff: { before: null, after: game.startTime.toISOString() },
+          where: { before: null, after: game.fieldId ? fieldLabels.get(game.fieldId) ?? null : null },
+          round: { before: null, after: game.roundNumber },
+          match: {
+            before: null,
+            after: `${teamNames.get(game.homeTeamId) ?? game.homeTeamId} v ${
+              teamNames.get(game.awayTeamId) ?? game.awayTeamId
+            }`,
+          },
         },
         meta: {
           via: 'generation',
@@ -194,6 +220,7 @@ async function commitSchedule(input: {
           divisionId: game.divisionId,
           homeTeamId: game.homeTeamId,
           awayTeamId: game.awayTeamId,
+          fieldId: game.fieldId,
           seed: result.config.seed,
         },
       })
@@ -219,7 +246,10 @@ async function commitSchedule(input: {
         entityId: gameId,
         action: 'official.assigned',
         diff: {
-          refereeId: { before: null, after: assignment.refereeId },
+          official: {
+            before: null,
+            after: refereeNames.get(assignment.refereeId) ?? assignment.refereeId,
+          },
           position: { before: null, after: assignment.position },
         },
         meta: { via: 'generation', gameId, refereeId: assignment.refereeId },

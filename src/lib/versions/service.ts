@@ -395,16 +395,26 @@ export async function restoreVersion(input: {
         entityType: 'Game',
         entityId: recreated.id,
         action: 'game.restored',
+        // Human-readable fields, because this diff is read by a person in the game's
+        // history panel. The ids live in meta, where a machine reader can still find them.
         diff: {
-          startTime: { before: null, after: game.startTime },
-          fieldId: { before: null, after: game.fieldId },
-          roundNumber: { before: null, after: game.roundNumber },
+          kickoff: { before: null, after: game.startTime },
+          where: {
+            before: null,
+            after: game.venueName ? `${game.venueName} · ${game.fieldName}` : null,
+          },
+          round: { before: null, after: game.roundNumber },
+          match: { before: null, after: `${game.homeTeamName} v ${game.awayTeamName}` },
         },
         meta: {
           via: 'restore',
           fromVersionId: source.id,
           fromVersionNumber: source.number,
           originalGameId: game.gameId,
+          divisionId: game.divisionId,
+          homeTeamId: game.homeTeamId,
+          awayTeamId: game.awayTeamId,
+          fieldId: game.fieldId,
         },
       })
 
@@ -419,6 +429,26 @@ export async function restoreVersion(input: {
             refereeId: official.refereeId,
             position: official.position as OfficialPosition,
             status: official.status as AcceptanceStatus,
+          },
+        })
+        // A restore re-creates the officiating crew, so it is a mutation like any other
+        // and gets its own audit row — the same shape generation writes.
+        gameEvents.push({
+          orgId: input.orgId,
+          actorId: input.actor.userId,
+          actorLabel: input.actor.email,
+          entityType: 'GameOfficial',
+          entityId: recreated.id,
+          action: 'official.assigned',
+          diff: {
+            official: { before: null, after: official.refereeName },
+            position: { before: null, after: official.position },
+          },
+          meta: {
+            via: 'restore',
+            gameId: recreated.id,
+            refereeId: official.refereeId,
+            fromVersionNumber: source.number,
           },
         })
       }

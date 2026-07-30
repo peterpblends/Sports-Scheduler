@@ -174,6 +174,7 @@ export default async function GamePage({
               Who changed this game, when, and what they changed.
             </p>
             <EntityHistory
+              timeZone={timezone}
               events={history.map((event) => ({
                 id: event.id,
                 action: event.action,
@@ -191,6 +192,7 @@ export default async function GamePage({
               Assignments, responses and any override an assigner recorded.
             </p>
             <EntityHistory
+              timeZone={timezone}
               events={officialHistory.map((event) => ({
                 id: event.id,
                 action: event.action,
