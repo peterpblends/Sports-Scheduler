@@ -1,4 +1,4 @@
-import { ZodError, type ZodType } from 'zod'
+import { ZodError, type ZodTypeAny, type output } from 'zod'
 import type { Actor } from './session'
 import { getActorFromRequest } from './session'
 import { can, roleIn, type Permission } from './authz'
@@ -47,7 +47,18 @@ export function handler<Ctx>(
   }
 }
 
-export async function parseBody<T>(req: Request, schema: ZodType<T>): Promise<T> {
+/**
+ * Parses and validates a JSON body.
+ *
+ * Typed on the schema rather than on a single `T` so that schemas which transform
+ * (`"08:00"` -> `480`) or fill defaults report their *output* type to callers.
+ * Collapsing input and output into one parameter silently widens every
+ * defaulted field back to `| undefined`.
+ */
+export async function parseBody<S extends ZodTypeAny>(
+  req: Request,
+  schema: S,
+): Promise<output<S>> {
   let raw: unknown
   try {
     raw = await req.json()

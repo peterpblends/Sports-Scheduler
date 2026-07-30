@@ -105,6 +105,9 @@ export function useCapturingMailer(): CapturingMailer {
 export async function resetDatabase(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE "AuditEvent", "Invitation", "PasswordResetToken", "Session",
+                   "GameOfficial", "Game", "BlackoutDate", "TimeSlot", "Field", "Venue",
+                   "RefereeAvailability", "Referee", "TeamMembership", "PersonRelationship",
+                   "Person", "Team", "Division", "Season", "League",
                    "Membership", "Organization", "User"
     RESTART IDENTITY CASCADE
   `)
@@ -177,4 +180,172 @@ export async function membershipIdFor(orgId: string, userId: string): Promise<st
     where: { userId_orgId: { userId, orgId } },
   })
   return membership.id
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 fixtures
+// ---------------------------------------------------------------------------
+
+import { POST as createLeagueRoute } from '@/app/api/orgs/[orgId]/leagues/route'
+import { POST as createSeasonRoute } from '@/app/api/orgs/[orgId]/seasons/route'
+import { POST as createDivisionRoute } from '@/app/api/orgs/[orgId]/divisions/route'
+import { POST as createTeamRoute } from '@/app/api/orgs/[orgId]/teams/route'
+import { POST as createPersonRoute } from '@/app/api/orgs/[orgId]/people/route'
+import { POST as addTeamMemberRoute } from '@/app/api/orgs/[orgId]/teams/[teamId]/members/route'
+import { POST as createVenueRoute } from '@/app/api/orgs/[orgId]/venues/route'
+import { POST as createFieldRoute } from '@/app/api/orgs/[orgId]/venues/[venueId]/fields/route'
+import { POST as createTimeSlotRoute } from '@/app/api/orgs/[orgId]/fields/[fieldId]/timeslots/route'
+import { POST as createRefereeRoute } from '@/app/api/orgs/[orgId]/referees/route'
+
+/** Fails loudly with the server's message rather than a bare status code. */
+function expectStatus(res: { status: number; body: any }, expected: number, what: string) {
+  if (res.status !== expected) {
+    throw new Error(`${what} expected ${expected}, got ${res.status}: ${JSON.stringify(res.body)}`)
+  }
+}
+
+export async function createLeague(actor: TestUser, orgId: string, name = 'Spring League') {
+  const res = await call<{ orgId: string }>(createLeagueRoute, `/api/orgs/${orgId}/leagues`, {
+    token: actor.token,
+    params: { orgId },
+    body: { name, sport: 'soccer' },
+  })
+  expectStatus(res, 201, 'createLeague')
+  return res.body.league as { id: string; name: string }
+}
+
+export async function createSeason(
+  actor: TestUser,
+  orgId: string,
+  leagueId: string,
+  overrides: { name?: string; startDate?: string; endDate?: string } = {},
+) {
+  const res = await call<{ orgId: string }>(createSeasonRoute, `/api/orgs/${orgId}/seasons`, {
+    token: actor.token,
+    params: { orgId },
+    body: {
+      leagueId,
+      name: overrides.name ?? 'Spring 2026',
+      startDate: overrides.startDate ?? '2026-03-07',
+      endDate: overrides.endDate ?? '2026-05-30',
+    },
+  })
+  expectStatus(res, 201, 'createSeason')
+  return res.body.season as { id: string; name: string }
+}
+
+export async function createDivision(
+  actor: TestUser,
+  orgId: string,
+  seasonId: string,
+  name = 'U12 Boys',
+) {
+  const res = await call<{ orgId: string }>(createDivisionRoute, `/api/orgs/${orgId}/divisions`, {
+    token: actor.token,
+    params: { orgId },
+    body: { seasonId, name },
+  })
+  expectStatus(res, 201, 'createDivision')
+  return res.body.division as { id: string; name: string }
+}
+
+export async function createTeam(actor: TestUser, orgId: string, divisionId: string, name: string) {
+  const res = await call<{ orgId: string }>(createTeamRoute, `/api/orgs/${orgId}/teams`, {
+    token: actor.token,
+    params: { orgId },
+    body: { divisionId, name },
+  })
+  expectStatus(res, 201, `createTeam(${name})`)
+  return res.body.team as { id: string; name: string }
+}
+
+export async function createPerson(
+  actor: TestUser,
+  orgId: string,
+  name: string,
+  extra: Record<string, unknown> = {},
+) {
+  const res = await call<{ orgId: string }>(createPersonRoute, `/api/orgs/${orgId}/people`, {
+    token: actor.token,
+    params: { orgId },
+    body: { name, ...extra },
+  })
+  expectStatus(res, 201, `createPerson(${name})`)
+  return res.body.person as { id: string; name: string }
+}
+
+export async function addTeamMember(
+  actor: TestUser,
+  orgId: string,
+  teamId: string,
+  personId: string,
+  role: 'player' | 'coach' | 'assistant' | 'manager' = 'player',
+  extra: Record<string, unknown> = {},
+) {
+  const res = await call<{ orgId: string; teamId: string }>(
+    addTeamMemberRoute,
+    `/api/orgs/${orgId}/teams/${teamId}/members`,
+    {
+      token: actor.token,
+      params: { orgId, teamId },
+      body: { personId, role, ...extra },
+    },
+  )
+  expectStatus(res, 201, 'addTeamMember')
+  return res.body.member as { id: string }
+}
+
+export async function createVenue(
+  actor: TestUser,
+  orgId: string,
+  name: string,
+  timezone = 'America/Los_Angeles',
+) {
+  const res = await call<{ orgId: string }>(createVenueRoute, `/api/orgs/${orgId}/venues`, {
+    token: actor.token,
+    params: { orgId },
+    body: { name, timezone },
+  })
+  expectStatus(res, 201, `createVenue(${name})`)
+  return res.body.venue as { id: string; name: string; timezone: string }
+}
+
+export async function createField(actor: TestUser, orgId: string, venueId: string, name: string) {
+  const res = await call<{ orgId: string; venueId: string }>(
+    createFieldRoute,
+    `/api/orgs/${orgId}/venues/${venueId}/fields`,
+    { token: actor.token, params: { orgId, venueId }, body: { name } },
+  )
+  expectStatus(res, 201, `createField(${name})`)
+  return res.body.field as { id: string; name: string }
+}
+
+export async function createRecurringSlot(
+  actor: TestUser,
+  orgId: string,
+  fieldId: string,
+  slot: { dayOfWeek: number; startTime: string; endTime: string; effectiveFrom?: string; effectiveTo?: string },
+) {
+  const res = await call<{ orgId: string; fieldId: string }>(
+    createTimeSlotRoute,
+    `/api/orgs/${orgId}/fields/${fieldId}/timeslots`,
+    { token: actor.token, params: { orgId, fieldId }, body: { kind: 'recurring', ...slot } },
+  )
+  expectStatus(res, 201, 'createRecurringSlot')
+  return res.body.timeSlot as { id: string }
+}
+
+export async function createReferee(
+  actor: TestUser,
+  orgId: string,
+  personId: string,
+  extra: Record<string, unknown> = {},
+) {
+  const res = await call<{ orgId: string }>(createRefereeRoute, `/api/orgs/${orgId}/referees`, {
+    token: actor.token,
+    params: { orgId },
+    body: { personId, ...extra },
+  })
+  expectStatus(res, 201, 'createReferee')
+  return res.body.referee as { id: string }
 }

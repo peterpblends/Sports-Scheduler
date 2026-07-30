@@ -7,6 +7,16 @@
 //    `deletedAt: null`; nothing in this app issues a hard DELETE except for
 //    single-use tokens.
 //  * `AuditEvent` rows are append-only. Nothing updates or deletes them.
+//  * Recurring windows (field time slots, referee availability) are NOT stored as
+//    instants. A weekly "Saturdays 8am-6pm" must keep meaning 8am local across a
+//    DST boundary, so they are stored as day-of-week + minutes-from-midnight in
+//    the relevant venue's / person's local zone, plus an effective date range.
+//    Only concrete occurrences — `Game.startTime` — are absolute UTC instants.
+//  * Money is stored as integer cents. No floats, no Decimal serialization traps.
+//  * Uniqueness on soft-deletable names (team name within a division, and so on)
+//    is enforced in the application layer scoped to `deletedAt: null`, not by a
+//    database constraint: a unique index would refuse to let a name be reused
+//    after the original row was soft-deleted. See `assertNameAvailable`.
 
 generator client {
   provider = "prisma-client-js"
@@ -47,6 +57,7 @@ model User {
   passwordResets     PasswordResetToken[]
   invitationsCreated Invitation[]         @relation("InvitationCreatedBy")
   auditEvents        AuditEvent[]
+  person             Person?
 
   @@index([deletedAt])
 }
@@ -97,6 +108,10 @@ model Organization {
   memberships Membership[]
   invitations Invitation[]
   auditEvents AuditEvent[]
+  leagues     League[]
+  people      Person[]
+  venues      Venue[]
+  blackouts   BlackoutDate[]
 
   @@index([deletedAt])
 }
@@ -161,4 +176,449 @@ model AuditEvent {
   @@index([orgId, createdAt])
   @@index([entityType, entityId, createdAt])
   @@index([actorId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Structure: league -> season -> division -> team
+// ---------------------------------------------------------------------------
+
+enum SeasonStatus {
+  draft
+  active
+  archived
+}
+
+model League {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  // Sport-agnostic: free text rather than an enum, so a new sport needs no migration.
+  sport       String       @default("soccer")
+  description String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime?    @db.Timestamptz(3)
+
+  seasons Season[]
+
+  @@index([orgId, deletedAt])
+}
+
+model Season {
+  id        String       @id @default(cuid())
+  leagueId  String
+  league    League       @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  name      String
+  // Calendar dates, not instants: a season runs "Mar 1 - Jun 15" regardless of zone.
+  startDate DateTime     @db.Date
+  endDate   DateTime     @db.Date
+  status    SeasonStatus @default(draft)
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime?    @db.Timestamptz(3)
+
+  divisions Division[]
+  games     Game[]
+
+  @@index([leagueId, deletedAt])
+}
+
+model Division {
+  id          String    @id @default(cuid())
+  seasonId    String
+  season      Season    @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime? @db.Timestamptz(3)
+
+  teams     Team[]
+  games     Game[]
+  blackouts BlackoutDate[]
+
+  @@index([seasonId, deletedAt])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  name       String
+
+  primaryColor   String?
+  secondaryColor String?
+  logoUrl        String?
+
+  // Preference, not a guarantee — the scheduler treats it as a soft constraint.
+  preferredVenueId String?
+  preferredVenue   Venue?  @relation(fields: [preferredVenueId], references: [id], onDelete: SetNull)
+
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  memberships TeamMembership[]
+  homeGames   Game[]           @relation("HomeTeam")
+  awayGames   Game[]           @relation("AwayTeam")
+  blackouts   BlackoutDate[]
+
+  @@index([divisionId, deletedAt])
+  @@index([preferredVenueId])
+}
+
+// ---------------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------------
+
+enum TeamRole {
+  player
+  coach
+  assistant
+  manager
+}
+
+enum RelationshipKind {
+  family
+  guardian
+  other
+}
+
+/// One person record per human, reused across every role they hold.
+model Person {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  name  String
+  email String?
+  phone String?
+  // Date of birth is a calendar date; it must not shift by zone.
+  dob   DateTime? @db.Date
+  notes String?
+
+  /// Links this person to a login, so a coach's or referee's own-scope
+  /// permissions can be resolved from their session.
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Set when this person has a declared conflict of interest — a relative on a
+  /// team, say. The scheduler refuses officiating assignments that touch it.
+  hasConflictOfInterest Boolean @default(false)
+  conflictNote          String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  teamMemberships TeamMembership[]
+  referee         Referee?
+  relationships   PersonRelationship[] @relation("RelationshipFrom")
+  relatedTo       PersonRelationship[] @relation("RelationshipTo")
+
+  @@index([orgId, deletedAt])
+  @@index([orgId, email])
+}
+
+/// Family links between people. Drives two scheduling rules: never assign an
+/// official to a game involving a relative, and keep siblings' games close
+/// together. Stored one row per direction by the API so lookups stay simple.
+model PersonRelationship {
+  id              String           @id @default(cuid())
+  personId        String
+  person          Person           @relation("RelationshipFrom", fields: [personId], references: [id], onDelete: Cascade)
+  relatedPersonId String
+  relatedPerson   Person           @relation("RelationshipTo", fields: [relatedPersonId], references: [id], onDelete: Cascade)
+  kind            RelationshipKind @default(family)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  deletedAt       DateTime?        @db.Timestamptz(3)
+
+  @@unique([personId, relatedPersonId, kind])
+  @@index([relatedPersonId])
+}
+
+model TeamMembership {
+  id       String   @id @default(cuid())
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  personId String
+  person   Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  role     TeamRole @default(player)
+
+  jerseyNumber String?
+  // Active date range. `activeTo` null means "still active".
+  activeFrom   DateTime? @db.Date
+  activeTo     DateTime? @db.Date
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([teamId, deletedAt])
+  @@index([personId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Officials
+// ---------------------------------------------------------------------------
+
+enum AvailabilityKind {
+  /// Recurring weekly window the referee is available, in their local zone.
+  weekly
+  /// One-off date range the referee is unavailable. Overrides `weekly`.
+  blackout
+}
+
+/// A Person flagged as an official.
+model Referee {
+  id       String @id @default(cuid())
+  personId String @unique
+  person   Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  certificationLevel String?
+  /// Integer cents per game.
+  payRateCents       Int?
+  maxGamesPerDay     Int     @default(3)
+  /// Minutes of travel the scheduler must leave between venues.
+  travelBufferMinutes Int    @default(30)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  preferredVenues Venue[]              @relation("RefereePreferredVenues")
+  availability    RefereeAvailability[]
+  assignments     GameOfficial[]
+
+  @@index([deletedAt])
+}
+
+model RefereeAvailability {
+  id        String           @id @default(cuid())
+  refereeId String
+  referee   Referee          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  kind      AvailabilityKind
+
+  // kind = weekly: local-time window, repeating. 0 = Sunday.
+  dayOfWeek   Int?
+  startMinute Int?
+  endMinute   Int?
+
+  // Date range over which this row applies. For `blackout` both are required and
+  // describe the unavailable days inclusively.
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  reason String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([refereeId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Places
+// ---------------------------------------------------------------------------
+
+model Venue {
+  id      String       @id @default(cuid())
+  orgId   String
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name    String
+  address String?
+  /// IANA zone. Every game at this venue renders in this zone.
+  timezone String
+  notes   String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  fields            Field[]
+  preferringTeams   Team[]
+  preferringReferees Referee[]      @relation("RefereePreferredVenues")
+  blackouts         BlackoutDate[]
+
+  @@index([orgId, deletedAt])
+}
+
+/// A playable surface. A venue can have several.
+model Field {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  name    String
+  notes   String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  timeSlots TimeSlot[]
+  games     Game[]
+
+  @@index([venueId, deletedAt])
+}
+
+/// When a field is available. Recurring windows are local-time (see the header
+/// note on DST); one-off windows pin a single calendar date.
+model TimeSlot {
+  id      String @id @default(cuid())
+  fieldId String
+  field   Field  @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  /// Null for a one-off slot; 0 = Sunday for a recurring one.
+  dayOfWeek     Int?
+  /// Set for a one-off slot only.
+  specificDate  DateTime? @db.Date
+  /// Minutes from local midnight.
+  startMinute   Int
+  endMinute     Int
+  /// Bounds a recurring slot, e.g. Mar 1 - Jun 15.
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  notes String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([fieldId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Games
+// ---------------------------------------------------------------------------
+
+enum GameStatus {
+  scheduled
+  confirmed
+  played
+  postponed
+  cancelled
+}
+
+enum OfficialPosition {
+  center
+  AR1
+  AR2
+  scorekeeper
+}
+
+enum AcceptanceStatus {
+  pending
+  accepted
+  declined
+}
+
+model Game {
+  id         String   @id @default(cuid())
+  seasonId   String
+  season     Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  homeTeamId String
+  homeTeam   Team   @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId String
+  awayTeam   Team   @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+
+  /// Null while a game is proposed but not yet placed on a field.
+  fieldId String?
+  field   Field?  @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+
+  /// Absolute instant, UTC. Rendered in the field's venue zone.
+  startTime       DateTime   @db.Timestamptz(3)
+  durationMinutes Int        @default(60)
+  status          GameStatus @default(scheduled)
+
+  homeScore   Int?
+  awayScore   Int?
+  roundNumber Int?
+  notes       String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  officials GameOfficial[]
+
+  @@index([seasonId, startTime])
+  @@index([divisionId, startTime])
+  @@index([fieldId, startTime])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+  @@index([deletedAt])
+}
+
+model GameOfficial {
+  id        String           @id @default(cuid())
+  gameId    String
+  game      Game             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  refereeId String
+  referee   Referee          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  position  OfficialPosition
+  status    AcceptanceStatus @default(pending)
+
+  /// Overrides the referee's default rate for this game, in cents.
+  payRateCentsOverride Int?
+  assignedAt           DateTime  @default(now()) @db.Timestamptz(3)
+  respondedAt          DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([gameId, deletedAt])
+  @@index([refereeId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Blackouts
+// ---------------------------------------------------------------------------
+
+enum BlackoutScope {
+  org
+  division
+  team
+  venue
+}
+
+/// Dates nothing may be scheduled on, at one of four scopes. Holidays,
+/// tournaments, field maintenance. A hard constraint for the scheduler.
+model BlackoutDate {
+  id    String        @id @default(cuid())
+  orgId String
+  org   Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scope BlackoutScope
+
+  /// Exactly one of these is set, matching `scope` (none for an org-wide row).
+  divisionId String?
+  division   Division? @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  teamId     String?
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  venueId    String?
+  venue      Venue?    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  /// Inclusive calendar date range.
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  reason    String
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([orgId, startDate])
+  @@index([divisionId])
+  @@index([teamId])
+  @@index([venueId])
 }

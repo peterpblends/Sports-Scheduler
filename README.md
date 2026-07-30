@@ -4,8 +4,9 @@ League scheduling for any sport: define teams, people, venues, officials and rul
 generate a season schedule that respects every hard constraint, then review,
 publish and roll back with a full audit trail.
 
-**Status: Phase 1 (auth and accounts) complete.** Phases 2–6 — core data model,
-scheduling engine, revision history, UI, and import/export/notifications — are next.
+**Status: Phases 1 and 2 complete** — auth and accounts, and the core data model with
+its CRUD surface, conflict checking and setup UI. Phases 3–6 — scheduling engine,
+revision history, full UI, and import/export/notifications — are next.
 
 ## Stack
 
@@ -50,8 +51,17 @@ so the full flows are exercisable locally.
 
 ### Demo accounts
 
-`npm run seed` creates **Riverside Youth Soccer** with one user per role.
-Password for all of them is `demo-password-123`:
+`npm run seed` creates **Riverside Youth Soccer**: 2 leagues, an active Spring 2026
+season with a 9-team U12 Boys division (odd on purpose, so bye handling gets
+exercised) and an 8-team U10 Girls division, 229 people on full rosters, 6 officials
+with weekly availability and blackouts, 2 venues over 3 fields with Saturday
+8am–6pm local slots across Mar 7 – May 30 2026, holiday and maintenance blackouts,
+a sibling pair split across two teams, and one user per role.
+
+That is deliberately the shape acceptance scenario 2 asks for, so the phase 3
+generator can run against it with no extra setup.
+
+Password for all logins is `demo-password-123`:
 
 | Role | Email |
 | --- | --- |
@@ -62,7 +72,9 @@ Password for all of them is `demo-password-123`:
 | referee | `referee@riverside.example` |
 | viewer | `viewer@riverside.example` |
 
-The seed script is idempotent and prints a live invitation-accept link on each run.
+The seed script is idempotent — re-running soft-deletes the previous set rather than
+dropping it, so the audit trail survives — and prints a live invitation-accept link
+each run.
 
 ## Scripts
 
@@ -109,13 +121,38 @@ Nothing consults a client-supplied role, and a role revoked a moment ago is
 enforced on the next call. Pages use `requireOrgAccess()`, which applies the same
 rules; hidden nav links are a convenience, never the control.
 
-Three deliberate details:
+Four deliberate details:
 
 - **Non-members get 404, not 403.** Whether an organization exists is itself private.
 - **Escalation is blocked separately from permission.** Holding `member:update_role`
   is not enough: `canAssignRole()` also refuses to grant a role above the actor's own
   rank and reserves granting or revoking `owner` for owners.
 - **An org can never be left without an owner.** The last owner cannot be demoted or removed.
+- **Every entity id is proved to belong to the org in the URL.** A permission check
+  alone is not enough — a real member of org A could otherwise pass their own `orgId`
+  with a team id from org B. The `assert*InOrg` helpers in
+  [`src/lib/scope.ts`](src/lib/scope.ts) resolve the whole chain (team → division →
+  season → league → org) and 404 if it does not terminate at that org.
+
+### Team-scoped and self-scoped permissions
+
+Some permissions end in `:own` and need a second, row-level check:
+
+| Permission | Held by | Scope check |
+| --- | --- | --- |
+| `roster:write:own` | coach | `requireTeamRosterWrite` — team must be one they are staff of |
+| `official:availability:write:own` | referee | `requireAvailabilityWrite` — their own referee record |
+| `official:respond:own` | referee | `requireAssignmentRespond` — their own assignment |
+
+"Their own" resolves through `Person.userId`: a login is tied to one Person record,
+and that Person's staff `TeamMembership` rows are their teams. A user with no linked
+Person, or one attached only as a *player*, fails every `:own` check — the scope
+resolution fails closed rather than open.
+
+The team id always comes from the URL, and nested rows are loaded with both their own
+id and the parent id from the URL. That closes the smuggling case: passing another
+team's membership id through a URL naming your own team returns 404 rather than
+editing it.
 
 ### Session and credential handling
 
@@ -136,14 +173,60 @@ Entities carry `deletedAt` and are soft-deleted. `AuditEvent` rows are
 append-only — actor, timestamp, entity type and id, action, and a field-level
 before/after JSON diff — and are written **inside the same transaction** as the
 mutation, so a rolled-back write cannot leave a phantom entry and a committed one
-can never be missing its entry. Phase 4 builds schedule versions, diffs and
-restore on top of this table.
+can never be missing its entry. A rejected write records nothing; a no-op `PATCH`
+records nothing either, since the log tracks changes rather than requests. Phase 4
+builds schedule versions, diffs and restore on top of this table.
+
+Uniqueness on soft-deletable names (a team name within a division, a division name
+within a season) is enforced in the application layer scoped to `deletedAt: null`,
+not by a database index. An index would keep a soft-deleted row's name reserved
+forever; `assertNameAvailable` in [`src/lib/crud.ts`](src/lib/crud.ts) does not.
+
+### Hard constraints
+
+[`src/lib/conflicts.ts`](src/lib/conflicts.ts) is the single definition of "this
+placement is illegal", shared by manual game editing now and the phase 3 generator
+and phase 5 calendar later:
+
+| Constraint | Rule |
+| --- | --- |
+| `field_double_booked` | overlapping game on the same field, plus any configured buffer |
+| `team_double_booked` | a team cannot be in two places at once |
+| `outside_field_availability` | must sit inside a published slot, judged in venue-local time |
+| `blackout_date` | org, division, team or venue blackout covering the venue-local date |
+| `referee_unavailable` | blackout, outside a weekly window, overlapping assignment, or too little travel time |
+| `referee_daily_cap` | more games that venue-local day than their cap |
+| `referee_conflict_of_interest` | on one of the teams, or related to someone who is |
+
+A violating write is refused with `409` and the full conflict list. Supplying
+`overrideReason` proceeds anyway and records the reason **and the conflicts it
+overrode** on the audit event — the "warn, but let an admin override with a logged
+reason" rule. Cancelled and postponed games release their slot; a score-only edit
+skips the placement re-check.
 
 ## Timezones
 
-`DateTime` columns are `timestamptz` and always hold UTC. Organizations and
-(from phase 2) venues carry an IANA zone used purely for rendering. Getting this
-right up front is deliberate — it is painful to retrofit.
+Two kinds of value exist and [`src/lib/time.ts`](src/lib/time.ts) keeps them apart:
+
+**Instants** — a game kickoff. `timestamptz` holding UTC, rendered in the venue's
+zone. Every venue carries a required IANA zone; games are grouped and displayed by
+the *venue-local* date, so an 8pm Pacific Saturday game is not filed under Sunday
+because UTC says so.
+
+**Local wall-clock rules** — "Field 2, Saturdays 8am–6pm, Mar 1 – Jun 15", and
+referee weekly availability. Stored as day-of-week plus minutes-from-midnight plus a
+calendar date range, *not* as instants. That is the only way "8am" keeps meaning 8am
+across a daylight-saving change: the same rule resolves to 16:00Z in March and 15:00Z
+in April, and both read as 8am at the venue.
+
+`zonedTimeToUtc` finds a self-consistent offset rather than guessing once. The two
+awkward cases resolve deterministically, matching the convention Temporal calls
+*compatible*: an ambiguous reading (the hour repeated when clocks go back) takes the
+first occurrence; a nonexistent one (the hour skipped going forward) shifts forward
+past the gap. Calendar dates — season bounds, dates of birth, blackout ranges — are
+`date` columns parsed to UTC midnight, so they never shift zone at all.
+
+Getting this right up front was deliberate; it is painful to retrofit.
 
 ## Testing
 
@@ -151,11 +234,11 @@ right up front is deliberate — it is painful to retrofit.
 npm test
 ```
 
-51 tests across three files, running against real Postgres so every
-authorization path is exercised as deployed. Route handlers read cookies from the
-`Request` and write them onto the `Response` rather than going through
-`next/headers`, which keeps each one a pure `Request -> Response` function that
-tests can call directly without booting Next.
+139 tests across seven files, running against real Postgres so every authorization
+path is exercised as deployed. Route handlers read cookies from the `Request` and
+write them onto the `Response` rather than going through `next/headers`, which keeps
+each one a pure `Request -> Response` function that tests can call directly without
+booting Next.
 
 - **`tests/authz.test.ts`** — the permission matrix and role-assignment rules.
 - **`tests/auth-flows.test.ts`** — signup, login, logout, reset, change-password,
@@ -165,6 +248,19 @@ tests can call directly without booting Next.
   trip, and per-role endpoint enforcement, including that a **scheduler cannot
   change roles, invite, remove members, or touch the org** and that an admin
   cannot demote an owner or delete the org.
+- **`tests/team-scope.test.ts`** — non-negotiable #1: a **coach token cannot mutate
+  another team's data**. Adding, editing and removing on a rival roster all 403;
+  reaching a rival roster row through the coach's *own* team URL 404s; refused
+  attempts write no audit event; and the scope fails closed for a coach with no
+  linked Person, one attached only as a player, or one since removed from the team.
+- **`tests/time.test.ts`** — DST correctness: 8am local either side of both
+  transitions, ambiguous and nonexistent readings, half-hour offsets, southern-
+  hemisphere zones, and local-vs-UTC day boundaries.
+- **`tests/entities.test.ts`** — the structure chain, cross-org parents rejected at
+  every level, soft-delete then name reuse, local-minute time slots, and per-role
+  enforcement on the phase 2 endpoints.
+- **`tests/conflicts.test.ts`** — every hard constraint, the override-with-reason
+  flow and its audit record, and the officiating rules from acceptance scenario 3.
 
 ## Project layout
 
@@ -177,10 +273,16 @@ src/
   app/
     api/                 route handlers — all mutations, all permission-checked
     (auth)/              login, signup, forgot/reset password, accept invite
-    (app)/               authenticated shell: dashboard, members, account
+    (app)/               authenticated shell: dashboard, schedule, leagues,
+                         venues, people, members, account
   lib/
     authz.ts             role -> permission matrix, escalation rules
+    scope.ts             assert*InOrg tenant scoping; own-team / own-assignment scope
+    conflicts.ts         hard-constraint checking for one game placement
+    time.ts              UTC instants vs local wall-clock rules, zone conversion
     http.ts              requirePermission / requireActor, error mapping
+    crud.ts              write + audit in one transaction; soft delete; name uniqueness
+    roster.ts            roster invariants shared across endpoints
     session.ts           session lifecycle and cookie plumbing
     auth-server.ts       server-component equivalents
     audit.ts             append-only audit events and field diffs
@@ -191,10 +293,24 @@ src/
 tests/
 ```
 
+## Data model
+
+`League → Season → Division → Team`, with `Person` reused across every role a human
+holds (`TeamMembership` carries the role, jersey number and active date range).
+`Referee` flags a Person as an official and carries certification, pay rate in integer
+cents, a daily cap and a travel buffer; `RefereeAvailability` holds weekly windows and
+blackouts. `Venue → Field → TimeSlot` covers places and when they are usable. `Game`
+links a season, division, two teams and a field to a UTC instant, with `GameOfficial`
+for assignments and acceptance. `BlackoutDate` applies at org, division, team or venue
+scope. `PersonRelationship` records family links, which drive both the officiating
+conflict-of-interest rule and the phase 3 "keep siblings' games close together"
+weighting.
+
+Everything soft-deletes. Money is integer cents — no floats, no `Decimal`
+serialization traps.
+
 ## Roadmap
 
-- **Phase 2** — leagues, seasons, divisions, teams, people, referees and
-  availability, venues, fields, time slots, games, officials, blackout dates.
 - **Phase 3** — the scheduling engine: a pure function (config + entities in,
   games out) with hard constraints never violated and soft constraints scored and
   reported.

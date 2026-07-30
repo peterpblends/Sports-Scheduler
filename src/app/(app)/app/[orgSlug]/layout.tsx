@@ -21,6 +21,10 @@ export default async function OrgLayout({
   // link is a convenience, not the control — every endpoint re-checks.
   const nav = [
     { href: `/app/${orgSlug}`, label: 'Dashboard', show: true },
+    { href: `/app/${orgSlug}/schedule`, label: 'Schedule', show: can(membership.role, 'schedule:read:published') },
+    { href: `/app/${orgSlug}/leagues`, label: 'Leagues', show: can(membership.role, 'structure:read') },
+    { href: `/app/${orgSlug}/venues`, label: 'Venues', show: can(membership.role, 'venue:read') },
+    { href: `/app/${orgSlug}/people`, label: 'People', show: can(membership.role, 'roster:read') },
     { href: `/app/${orgSlug}/members`, label: 'Members', show: can(membership.role, 'member:read') },
     { href: '/account', label: 'Account', show: true },
   ].filter((item) => item.show)
