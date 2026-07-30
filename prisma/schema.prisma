@@ -1,0 +1,164 @@
+// Sports Scheduler — Prisma schema
+//
+// Conventions used throughout:
+//  * All timestamps are `Timestamptz` and always stored as UTC. Rendering into a
+//    venue's / organization's local zone happens in the presentation layer only.
+//  * Entities are soft-deleted via `deletedAt`. Application queries must filter on
+//    `deletedAt: null`; nothing in this app issues a hard DELETE except for
+//    single-use tokens.
+//  * `AuditEvent` rows are append-only. Nothing updates or deletes them.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  owner
+  admin
+  scheduler
+  coach
+  referee
+  viewer
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt    DateTime? @db.Timestamptz(3)
+
+  // Set when the user's credentials change, invalidating every issued session.
+  sessionsValidFrom DateTime @default(now()) @db.Timestamptz(3)
+
+  memberships        Membership[]
+  sessions           Session[]
+  passwordResets     PasswordResetToken[]
+  invitationsCreated Invitation[]         @relation("InvitationCreatedBy")
+  auditEvents        AuditEvent[]
+
+  @@index([deletedAt])
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Only a SHA-256 hash of the opaque bearer token is persisted.
+  tokenHash String    @unique
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  lastSeen  DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime  @db.Timestamptz(3)
+  revokedAt DateTime? @db.Timestamptz(3)
+  userAgent String?
+  ip        String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime  @db.Timestamptz(3)
+  usedAt    DateTime? @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  timezone  String    @default("America/Los_Angeles")
+  settings  Json      @default("{}")
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  memberships Membership[]
+  invitations Invitation[]
+  auditEvents AuditEvent[]
+
+  @@index([deletedAt])
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  role   Role
+
+  // Populated in phase 2 for coach / referee memberships so that team-scoped
+  // permission checks can resolve "their own team".
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+  @@index([deletedAt])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email       String
+  role        Role
+  tokenHash   String    @unique
+  createdById String
+  createdBy   User      @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt   DateTime  @db.Timestamptz(3)
+  acceptedAt  DateTime? @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+
+  @@index([orgId])
+  @@index([email])
+}
+
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  orgId      String?
+  org        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorLabel String
+  entityType String
+  entityId   String
+  action     String
+  // Field-level before/after diff: { field: { before, after } }
+  diff       Json     @default("{}")
+  // Free-form context (ip, user agent, override reason, version id, ...).
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([orgId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+}
