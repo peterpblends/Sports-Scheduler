@@ -3,6 +3,7 @@ import { updateGameOfficialSchema } from '@/lib/validation'
 import { softDeleteWithAudit, updateWithAudit } from '@/lib/crud'
 import { assertGameOfficialInOrg, requireAssignmentRespond } from '@/lib/scope'
 import { can } from '@/lib/authz'
+import { notifyAssignmentChanged } from '@/lib/notify'
 import type { GameOfficial } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; gameId: string; assignmentId: string }> }
@@ -84,5 +85,14 @@ export const DELETE = handler<Ctx>(async (req, ctx) => {
       }),
   })
 
-  return Response.json({ ok: true })
+  const notified = await notifyAssignmentChanged({
+    orgId,
+    gameId,
+    refereeId: before.refereeId,
+    change: 'unassigned',
+    position: before.position,
+    actorLabel: actor.email,
+  })
+
+  return Response.json({ ok: true, notified })
 })

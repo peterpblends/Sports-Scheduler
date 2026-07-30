@@ -29,3 +29,69 @@ body {
     @apply bg-ink-900 text-ink-100;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Print
+ *
+ * Used by the printable schedule, which produces a PDF through the browser's own
+ * print-to-PDF rather than a bundled PDF renderer. The rules that carry the weight
+ * are the page-break ones: a day heading must not be orphaned from its table, and a
+ * game row must not be split across two sheets. Colours are forced to black on white
+ * because a schedule pinned to a clubhouse wall is printed on a mono laser.
+ * --------------------------------------------------------------------------- */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  /* App chrome — nav, org switcher, sign-out — is screen furniture. */
+  body > div > header {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .print-root {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  .print-root * {
+    color: #000 !important;
+    border-color: #999 !important;
+    background: transparent !important;
+  }
+
+  /* Keep a day's heading with at least the start of its table. */
+  .print-day {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  /* A day longer than a page has to break, but never mid-row. */
+  .print-row {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .print-header {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  a {
+    text-decoration: none !important;
+  }
+
+  @page {
+    margin: 14mm 12mm;
+  }
+}

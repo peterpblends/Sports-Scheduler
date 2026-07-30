@@ -25,7 +25,7 @@ export async function call<P = unknown>(
   handler: RouteHandler<{ params: Promise<P> }>,
   path: string,
   options: CallOptions<P> = {},
-): Promise<{ status: number; body: any; setCookie: string | null; res: Response }> {
+): Promise<{ status: number; body: any; text: string; setCookie: string | null; res: Response }> {
   const url = new URL(path, BASE)
   for (const [key, value] of Object.entries(options.query ?? {})) {
     url.searchParams.set(key, value)
@@ -44,9 +44,15 @@ export async function call<P = unknown>(
   const res = await handler(req, { params: Promise.resolve(options.params as P) })
   const text = await res.text()
 
+  // Not every endpoint answers in JSON — exports are CSV, calendar feeds are
+  // text/calendar. Parsing on content-type keeps `body` useful for the JSON routes
+  // without turning a valid CSV response into a thrown SyntaxError.
+  const isJson = (res.headers.get('content-type') ?? '').includes('json')
+
   return {
     status: res.status,
-    body: text ? JSON.parse(text) : null,
+    body: isJson && text ? JSON.parse(text) : null,
+    text,
     setCookie: res.headers.get('set-cookie'),
     res,
   }
@@ -105,7 +111,7 @@ export function useCapturingMailer(): CapturingMailer {
 export async function resetDatabase(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE "AuditEvent", "Invitation", "PasswordResetToken", "Session",
-                   "ScheduleVersion",
+                   "ScheduleVersion", "CalendarFeed", "NotificationPreference",
                    "GameOfficial", "Game", "BlackoutDate", "TimeSlot", "Field", "Venue",
                    "RefereeAvailability", "Referee", "TeamMembership", "PersonRelationship",
                    "Person", "Team", "Division", "Season", "League",

@@ -4,6 +4,7 @@ import { createGameOfficialSchema } from '@/lib/validation'
 import { createWithAudit } from '@/lib/crud'
 import { assertGameInOrg, assertRefereeInOrg } from '@/lib/scope'
 import { detectOfficialConflicts } from '@/lib/conflicts'
+import { notifyAssignmentChanged } from '@/lib/notify'
 import type { GameOfficial } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; gameId: string }> }
@@ -85,5 +86,18 @@ export const POST = handler<Ctx>(async (req, ctx) => {
       }),
   })
 
-  return Response.json({ assignment: { id: assignment.id, ...snapshot(assignment) }, conflicts }, { status: 201 })
+  // After the write, so a mail failure cannot undo the assignment.
+  const notified = await notifyAssignmentChanged({
+    orgId,
+    gameId,
+    refereeId: data.refereeId,
+    change: 'assigned',
+    position: data.position,
+    actorLabel: actor.email,
+  })
+
+  return Response.json(
+    { assignment: { id: assignment.id, ...snapshot(assignment) }, conflicts, notified },
+    { status: 201 },
+  )
 })

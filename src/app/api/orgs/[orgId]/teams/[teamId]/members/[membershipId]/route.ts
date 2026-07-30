@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { notifyRosterChanged } from '@/lib/notify'
 import { handler, notFound, parseBody } from '@/lib/http'
 import { updateTeamMembershipSchema } from '@/lib/validation'
 import { softDeleteWithAudit, updateWithAudit } from '@/lib/crud'
@@ -85,5 +86,13 @@ export const DELETE = handler<Ctx>(async (req, ctx) => {
       }),
   })
 
-  return Response.json({ ok: true })
+  const notified = await notifyRosterChanged({
+    orgId,
+    teamId,
+    actorUserId: actor.userId,
+    actorLabel: actor.email,
+    summary: 'a member was removed',
+  })
+
+  return Response.json({ ok: true, notified })
 })

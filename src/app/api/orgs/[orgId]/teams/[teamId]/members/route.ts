@@ -5,6 +5,7 @@ import { createWithAudit } from '@/lib/crud'
 import { assertJerseyFree } from '@/lib/roster'
 import { assertPersonInOrg, assertTeamInOrg, requireTeamRosterWrite } from '@/lib/scope'
 import { parseCalendarDate } from '@/lib/time'
+import { notifyRosterChanged } from '@/lib/notify'
 import type { TeamMembership } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; teamId: string }> }
@@ -46,7 +47,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
   const data = await parseBody(req, createTeamMembershipSchema)
 
   // The person must also be in this org — no importing another tenant's people.
-  await assertPersonInOrg(orgId, data.personId)
+  const person = await assertPersonInOrg(orgId, data.personId)
 
   const existing = await prisma.teamMembership.findFirst({
     where: { teamId, personId: data.personId, role: data.role, deletedAt: null },
@@ -76,5 +77,16 @@ export const POST = handler<Ctx>(async (req, ctx) => {
       }),
   })
 
-  return Response.json({ member: { id: membership.id, ...snapshot(membership) } }, { status: 201 })
+  const notified = await notifyRosterChanged({
+    orgId,
+    teamId,
+    actorUserId: actor.userId,
+    actorLabel: actor.email,
+    summary: `${person.name} added as ${data.role}`,
+  })
+
+  return Response.json(
+    { member: { id: membership.id, ...snapshot(membership) }, notified },
+    { status: 201 },
+  )
 })

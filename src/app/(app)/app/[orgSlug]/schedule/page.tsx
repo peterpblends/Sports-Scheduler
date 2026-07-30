@@ -152,6 +152,28 @@ export default async function SchedulePage({
     return `/app/${orgSlug}/schedule?${next}`
   }
 
+  // The current filters, reused by every take-away format.
+  const filterParams = () => {
+    const next = new URLSearchParams({ seasonId: activeSeason.id })
+    for (const [key, value] of Object.entries({
+      divisionId: query.divisionId,
+      teamId: query.teamId,
+      venueId: query.venueId,
+      refereeId: refereeFilter,
+    })) {
+      if (value) next.set(key, value)
+    }
+    return next
+  }
+
+  const printHref = `/app/${orgSlug}/schedule/print?${filterParams()}`
+  const exportHref = (kind: 'schedule' | 'assignments') => {
+    const params = filterParams()
+    params.set('kind', kind)
+    params.delete('seasonId')
+    return `/api/orgs/${orgId}/seasons/${activeSeason.id}/export?${params}`
+  }
+
   return (
     <>
       <PageHeader
@@ -241,18 +263,36 @@ export default async function SchedulePage({
             ))}
         </nav>
 
-        {canEdit && (
-          <Link
-            href={linkTo({ edit: editing ? undefined : '1', view: 'calendar' })}
-            className={
-              editing
-                ? 'rounded-lg border border-ink-300 px-3 py-1.5 text-sm dark:border-ink-600'
-                : 'rounded-lg bg-turf-600 px-3 py-1.5 text-sm font-medium text-white'
-            }
-          >
-            {editing ? 'Done editing' : 'Rearrange games'}
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          {/* Take-away formats. Each one carries the filters currently applied, so
+              "export what I am looking at" does what it says. */}
+          <Link href={printHref} className="text-turf-600 hover:underline">
+            Print
           </Link>
-        )}
+          <a href={exportHref('schedule')} className="text-turf-600 hover:underline">
+            CSV
+          </a>
+          {can(role, 'official:read') && (
+            <a href={exportHref('assignments')} className="text-turf-600 hover:underline">
+              Officials CSV
+            </a>
+          )}
+          <Link href={`/app/${orgSlug}/subscriptions`} className="text-turf-600 hover:underline">
+            Subscribe
+          </Link>
+          {canEdit && (
+            <Link
+              href={linkTo({ edit: editing ? undefined : '1', view: 'calendar' })}
+              className={
+                editing
+                  ? 'rounded-lg border border-ink-300 px-3 py-1.5 dark:border-ink-600'
+                  : 'rounded-lg bg-turf-600 px-3 py-1.5 font-medium text-white'
+              }
+            >
+              {editing ? 'Done editing' : 'Rearrange games'}
+            </Link>
+          )}
+        </div>
       </div>
 
       {editing ? (

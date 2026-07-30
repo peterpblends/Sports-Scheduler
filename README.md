@@ -4,9 +4,9 @@ League scheduling for any sport: define teams, people, venues, officials and rul
 generate a season schedule that respects every hard constraint, then review,
 publish and roll back with a full audit trail.
 
-**Status: Phases 1–4 complete** — auth and accounts, the core data model with its CRUD
-surface and conflict checking, the scheduling engine, and revision history. Phases 5–6
-— the full UI, and import/export/notifications — are next.
+**Status: complete.** All six phases are in: auth and accounts, the core data model
+with its CRUD surface and conflict checking, the scheduling engine, revision history,
+the editing UI, and import/export/notifications.
 
 ## Stack
 
@@ -342,6 +342,14 @@ changed this game and when", including any override reason recorded at the time)
 **global activity feed** filterable by actor, entity type and date range, with facet
 counts so the filters show what actually exists.
 
+### The public page
+
+`/s/<org-slug>` is the schedule with no session at all. It reads through the same
+`readSchedule` with `canReadDrafts` hard-coded false, so it cannot see a live row even in
+principle — publishing is the only thing that puts anything there, and a season with
+nothing published `404`s rather than rendering an empty page. Officials are hidden: the
+public needs to know when and where a game is, not who is refereeing it.
+
 ## Timezones
 
 Two kinds of value exist and [`src/lib/time.ts`](src/lib/time.ts) keeps them apart:
@@ -372,8 +380,9 @@ Getting this right up front was deliberate; it is painful to retrofit.
 npm test
 ```
 
-257 tests across ten files. The engine and diff tests run purely off fixtures; the
-rest run against real Postgres so every authorization path is exercised as deployed. Route
+323 tests across twelve files. The engine, diff, CSV and iCal tests run purely off
+fixtures; the rest run against real Postgres so every authorization path is exercised as
+deployed. Route
 handlers read cookies from the `Request` and write them onto the `Response` rather
 than going through `next/headers`, which keeps each one a pure `Request -> Response`
 function that tests can call directly without booting Next.
@@ -412,6 +421,18 @@ function that tests can call directly without booting Next.
   content with the audit trail intact (5); and publish, then confirm a coach sees only
   the published version while the draft moves on beneath them (6). Plus the pure diff,
   snapshot immutability, and the filterable activity feed.
+- **`tests/schedule-ui.test.ts`** — acceptance scenario 4 end to end: drag a game onto an
+  occupied slot, get a 409 naming `field_double_booked`, confirm nothing moved, override
+  with a reason, and find the reason and the overridden conflicts on the audit event.
+  Plus local-time editing across zones, the officials candidate endpoint and its
+  conflict-of-interest refusal, CSV parsing against awkward input, the import's
+  all-or-nothing commit, and the read layer's published/draft split.
+- **`tests/distribution.test.ts`** — the export surfaces, which are where authorization
+  is easiest to lose: an export honours the published/draft split, a calendar token dies
+  when its owner's membership does, a coach cannot subscribe to a team they do not coach,
+  a wrong token and a revoked one return byte-identical 404s. Plus iCal correctness
+  (stable UIDs, octet-safe line folding, `STATUS:CANCELLED` rather than a silent
+  removal) and notification dispatch, preference gating and suppression records.
 
 ## Project layout
 
@@ -424,12 +445,23 @@ src/
   app/
     api/                 route handlers — all mutations, all permission-checked
     (auth)/              login, signup, forgot/reset password, accept invite
-    (app)/               authenticated shell: dashboard, schedule, leagues,
-                         venues, people, members, account
+    (app)/               authenticated shell: dashboard, setup, schedule (list,
+                         calendar, per-team/venue/official, print), officiating
+                         board, leagues, venues, people, members, subscriptions
+    s/[orgSlug]/         the public schedule — no session, published version only
   lib/
     authz.ts             role -> permission matrix, escalation rules
     scope.ts             assert*InOrg tenant scoping; own-team / own-assignment scope
     conflicts.ts         hard-constraint checking for one game placement
+    csv.ts               dependency-free CSV parser and roster row validation
+    notify.ts            recipient resolution, preference gating, mail dispatch
+    schedule/            the display layer
+      read.ts              the one published-vs-draft read, normalised to rows
+      grid.ts              the date x field x time grid the editor drops onto
+    export/              getting the schedule out
+      csv.ts               schedule, roster and assignment renderings
+      ical.ts              RFC 5545 generation; stable UIDs, octet-safe folding
+      feeds.ts             subscription tokens, re-authorized on every fetch
     versions/            revision history
       snapshot.ts          snapshot shape and the pure diff
       service.ts           create, publish, restore, and the read split
@@ -471,13 +503,104 @@ scope. `PersonRelationship` records family links, which drive both the officiati
 conflict-of-interest rule and the phase 3 "keep siblings' games close together"
 weighting.
 
+`CalendarFeed` holds an iCal subscription: a SHA-256 token digest bound to the user who
+created it plus a scope, revoked rather than deleted so the audit trail can still say which
+feed was turned off and when. `NotificationPreference` is per user per org, and an absent
+row means the column defaults.
+
 Everything soft-deletes. Money is integer cents — no floats, no `Decimal`
 serialization traps.
 
-## Roadmap
+## Editing the schedule
 
-- **Phase 5** — dashboard, setup wizard, calendar/list/per-team views,
-  drag-and-drop editing with override-and-log, referee assignment board, CSV
-  roster import, public schedule page.
-- **Phase 6** — CSV import/export, PDF and live iCal feeds, transactional email,
-  per-user notification preferences.
+Five views over one read layer — list, calendar (date × field), by team, by venue, by
+official — all filtered from the same query parameters, all rendered in each venue's own
+zone. `src/lib/schedule/read.ts` is the only place a schedule is read for display, which
+is what keeps the published/draft split from having to be re-derived per page.
+
+**Drag-and-drop** (acceptance scenario 4) is deliberately server-decided. A drop `PATCH`es
+the game with no override reason. If the placement breaks a hard constraint the endpoint
+refuses with `409` and the conflict list, which the UI renders with each constraint named;
+only then does a reason box appear, and confirming re-sends the move with the reason
+attached, where it lands on the audit event alongside the conflicts it overrode. The client
+never decides whether a placement is legal — it cannot, since the rules involve rows it has
+not loaded, and trusting it would put the constraint check on the wrong side of the wire.
+
+The grid the editor drops onto is built on the server (`src/lib/schedule/grid.ts`) because
+a cell's instant is zone arithmetic: the same 9:00 row means different instants on a Denver
+field and a Los Angeles one, and different instants either side of a DST boundary. Moving a
+game between venues keeps the local time the operator chose and changes the instant, which
+is what picking "9:00" on a form means.
+
+Kickoffs are edited as a date and a wall-clock time, never as an ISO string. The endpoint
+accepts `localDate`/`localTime` and converts them in the *target* field's zone.
+
+## Import and export
+
+**Roster CSV import** previews by default. Every row is validated and every problem
+reported — the parser does not stop at the first — so a file can be corrected in one pass
+rather than one upload per mistake. A commit runs the same validation and refuses outright
+if anything is wrong: a half-imported roster is worse than a rejected one, because nobody
+can tell which half landed. Rows are matched to existing people by email, then by name, so
+a re-import updates instead of duplicating. The parser handles what spreadsheets actually
+emit — quoted fields, embedded commas and newlines, doubled quotes, CRLF, a UTF-8 BOM.
+
+**CSV export** covers schedules, rosters and officiating assignments. Every schedule row
+carries both the local reading and the UTC instant: the local date and time are what a
+human pastes into a newsletter, the ISO instant is what another system can import without
+guessing a zone. Roster exports emit exactly the columns the importer reads, so a file
+round-trips. Exports read through the same `readSchedule`, so a coach exporting gets the
+published snapshot — an export is otherwise the easiest way to leak an unpublished draft.
+
+**Printing** goes through the browser's own print-to-PDF rather than a bundled PDF
+renderer. That costs one stylesheet instead of a rendering dependency, inherits the
+platform's font handling, and produces a real vector PDF with selectable text. What it
+gives up is server-side generation. The print rules that carry the weight are the
+page-break ones: a day's heading must not be orphaned from its table, and a game row must
+not be split across two sheets.
+
+**Live iCal feeds** are per-team, per-official or org-wide. A calendar client fetches on a
+timer with no cookie, so the credential is the URL: 256 bits of entropy, stored as a
+SHA-256 digest, shown once at creation, revocable. Two things make that safe —
+
+- Authorization is re-derived on every fetch from the owner's **live** membership, never
+  frozen into the feed. Removing someone from the org, or dropping them from coach to
+  viewer, changes what their existing URL returns on the next poll, without anyone having
+  to remember the feed exists.
+- A feed never serves a draft. Everyone who subscribes to a calendar is by definition
+  outside the office, so they get the published snapshot — same as the public page.
+
+Every failure returns the same bare `404`. A calendar client cannot act on a distinction,
+and telling a prober that a token was once valid is a disclosure for nothing.
+
+UIDs are derived from the game id, so a rescheduled game **moves** in a subscriber's
+calendar rather than appearing twice; a random UID per render would duplicate the whole
+season on every poll. Times are emitted as UTC instants and rendered by the client in the
+subscriber's own zone. A cancelled game is emitted as `STATUS:CANCELLED` rather than
+dropped, because silently removing it leaves a stale entry in the subscriber's calendar
+forever.
+
+## Notifications
+
+Emails on publish, reschedule and assignment change, each with a per-user, per-org
+preference. Three rules:
+
+1. **Never inside the mutation's transaction.** A mail send that fails or hangs must not
+   roll back a published schedule, and a transaction must not be held open across a network
+   call to an SMTP server. Callers dispatch after their write commits.
+2. **Recipients come from the data, then get filtered by preference.** A missing preference
+   row means the defaults, so nobody needs back-filling when a new kind is added — a
+   missing row and an untouched row behave identically.
+3. **One audit row per notification**, including the ones a preference suppressed. "Why
+   wasn't I told?" has to be answerable, and a suppressed delivery recorded as nothing at
+   all is indistinguishable from a bug.
+
+A failure is swallowed per-recipient and reported in the response. One bounced mailbox does
+not undo a publish. Players are deliberately not notified: a youth roster is mostly minors
+without logins, and a `Person` is only reachable at all once linked to a user account.
+
+Two things are deliberately quiet. A move emails only on a real move — `placementChanged`
+is true for a status change too, so the dispatch is gated on the start time or the field
+actually differing, because a score entry is not something to wake a coach's phone for.
+And a roster change never emails whoever made it: telling someone about their own edit is
+noise, and it is the fastest way for a notification system to lose people's trust.

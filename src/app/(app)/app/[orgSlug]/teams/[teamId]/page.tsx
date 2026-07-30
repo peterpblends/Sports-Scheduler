@@ -243,6 +243,18 @@ export default async function TeamPage({
         </Card>
       </div>
 
+      <p className="mt-4 text-sm">
+        <a
+          href={`/api/orgs/${orgId}/teams/${teamId}/export`}
+          className="text-turf-600 hover:underline"
+        >
+          Export this roster as CSV
+        </a>
+        <span className="ml-2 text-ink-500 dark:text-ink-400">
+          — same columns the importer reads, so it can be edited and imported back.
+        </span>
+      </p>
+
       {canEdit && (
         <div className="mt-4">
           <RosterImport orgId={orgId} teamId={teamId} teamName={team.name} />

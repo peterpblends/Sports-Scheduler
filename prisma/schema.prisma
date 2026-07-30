@@ -59,6 +59,8 @@ model User {
   auditEvents        AuditEvent[]
   person             Person?
   scheduleVersions   ScheduleVersion[] @relation("VersionAuthor")
+  calendarFeeds      CalendarFeed[]
+  notificationPrefs  NotificationPreference[]
 
   @@index([deletedAt])
 }
@@ -113,6 +115,8 @@ model Organization {
   people      Person[]
   venues      Venue[]
   blackouts   BlackoutDate[]
+  calendarFeeds CalendarFeed[]
+  notificationPrefs NotificationPreference[]
 
   @@index([deletedAt])
 }
@@ -222,6 +226,7 @@ model Season {
   divisions Division[]
   games     Game[]
   versions  ScheduleVersion[] @relation("SeasonVersions")
+  calendarFeeds CalendarFeed[]
 
   /// The single version low-privilege roles and the public are shown. Null until
   /// something is published.
@@ -274,6 +279,7 @@ model Team {
   homeGames   Game[]           @relation("HomeTeam")
   awayGames   Game[]           @relation("AwayTeam")
   blackouts   BlackoutDate[]
+  calendarFeeds CalendarFeed[]
 
   @@index([divisionId, deletedAt])
   @@index([preferredVenueId])
@@ -401,6 +407,7 @@ model Referee {
   preferredVenues Venue[]              @relation("RefereePreferredVenues")
   availability    RefereeAvailability[]
   assignments     GameOfficial[]
+  calendarFeeds   CalendarFeed[]
 
   @@index([deletedAt])
 }
@@ -694,4 +701,82 @@ model ScheduleVersion {
   @@unique([seasonId, number])
   @@index([seasonId, createdAt])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: subscriptions and notifications
+// ---------------------------------------------------------------------------
+
+enum CalendarFeedScope {
+  org
+  team
+  referee
+}
+
+/**
+ * A live iCal subscription URL.
+ *
+ * Calendar clients cannot send a session cookie, so the secret has to travel in the
+ * path. It is stored as a SHA-256 digest for the same reason sessions are: a leaked
+ * table must not hand anyone a working feed. The token is shown once, at creation.
+ *
+ * A feed is bound to the user who created it *and* to a scope. Authorization is
+ * re-derived from that user's live role on every fetch, so revoking their membership
+ * kills the feed without anyone having to remember to delete it.
+ */
+model CalendarFeed {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  scope CalendarFeedScope
+  /// Set when scope is `team`.
+  teamId String?
+  team   Team?   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Set when scope is `referee`.
+  refereeId String?
+  referee   Referee? @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  /// Optional: pin the feed to one season rather than following the active one.
+  seasonId String?
+  season   Season? @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  label     String
+
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastAccessedAt DateTime? @db.Timestamptz(3)
+  revokedAt      DateTime? @db.Timestamptz(3)
+
+  @@index([userId, orgId, revokedAt])
+  @@index([orgId, revokedAt])
+}
+
+/**
+ * Per-user, per-org notification settings.
+ *
+ * Absent rows mean the defaults below, so nobody has to be back-filled when a new
+ * notification kind is added — a missing row and an untouched row behave the same.
+ */
+model NotificationPreference {
+  id     String       @id @default(cuid())
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  /// A version was published, so the schedule people see has changed.
+  schedulePublished Boolean @default(true)
+  /// A game the recipient is involved in moved.
+  gameRescheduled   Boolean @default(true)
+  /// An official was offered, reassigned or unassigned from a game.
+  assignmentChanged Boolean @default(true)
+  /// Somebody joined or left a team the recipient is staff of.
+  rosterChanged     Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([userId, orgId])
 }

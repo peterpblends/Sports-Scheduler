@@ -5,6 +5,7 @@ import { softDeleteWithAudit, updateWithAudit } from '@/lib/crud'
 import { assertFieldInOrg, assertGameInOrg } from '@/lib/scope'
 import { detectGameConflicts } from '@/lib/conflicts'
 import { formatInstantInZone, parseCalendarDate, parseTimeOfDay, slotInstant } from '@/lib/time'
+import { notifyGameRescheduled } from '@/lib/notify'
 import type { Game } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; gameId: string }> }
@@ -141,8 +142,43 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
       }),
   })
 
-  return Response.json({ game: { id: game.id, ...snapshot(game) }, conflicts })
+  // Only a real move is worth an email. A score entry or a note is not something to
+  // wake a coach's phone for, and `placementChanged` is true for a status change too.
+  let notified: Awaited<ReturnType<typeof notifyGameRescheduled>> | null = null
+  if (placementMoved || fieldId !== before.fieldId) {
+    notified = await notifyGameRescheduled({
+      orgId,
+      gameId,
+      actorLabel: actor.email,
+      before: {
+        startTime: before.startTime,
+        timezone: before.field?.venue.timezone ?? 'UTC',
+        where: before.field ? `${before.field.venue.name} — ${before.field.name}` : null,
+      },
+      after: await placementLabel(fieldId, startTime),
+      overrideReason: conflicts.length > 0 ? (patch.overrideReason ?? null) : null,
+    })
+  }
+
+  return Response.json({ game: { id: game.id, ...snapshot(game) }, conflicts, notified })
 })
+
+/** The zone and human location of a placement, for the "now" half of a move notice. */
+async function placementLabel(
+  fieldId: string | null,
+  startTime: Date,
+): Promise<{ startTime: Date; timezone: string; where: string | null }> {
+  if (!fieldId) return { startTime, timezone: 'UTC', where: null }
+  const field = await prisma.field.findFirstOrThrow({
+    where: { id: fieldId },
+    include: { venue: { select: { name: true, timezone: true } } },
+  })
+  return {
+    startTime,
+    timezone: field.venue.timezone,
+    where: `${field.venue.name} — ${field.name}`,
+  }
+}
 
 /**
  * Works out the instant a patch means.
