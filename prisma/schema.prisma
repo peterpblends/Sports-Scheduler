@@ -58,6 +58,7 @@ model User {
   invitationsCreated Invitation[]         @relation("InvitationCreatedBy")
   auditEvents        AuditEvent[]
   person             Person?
+  scheduleVersions   ScheduleVersion[] @relation("VersionAuthor")
 
   @@index([deletedAt])
 }
@@ -220,6 +221,12 @@ model Season {
 
   divisions Division[]
   games     Game[]
+  versions  ScheduleVersion[] @relation("SeasonVersions")
+
+  /// The single version low-privilege roles and the public are shown. Null until
+  /// something is published.
+  publishedVersionId String?          @unique
+  publishedVersion   ScheduleVersion? @relation("SeasonPublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
 
   @@index([leagueId, deletedAt])
 }
@@ -621,4 +628,70 @@ model BlackoutDate {
   @@index([divisionId])
   @@index([teamId])
   @@index([venueId])
+}
+
+// ---------------------------------------------------------------------------
+// Revision history
+// ---------------------------------------------------------------------------
+
+enum ScheduleVersionStatus {
+  /// Work in progress. Only roles holding `schedule:read` can see it.
+  draft
+  /// The one version coaches, referees and the public are shown.
+  published
+  /// Previously published, superseded by a newer one.
+  archived
+}
+
+/// Where a version came from. Recorded so the history reads as a narrative.
+enum ScheduleVersionSource {
+  generated
+  manual_save
+  restore
+}
+
+/**
+ * An immutable snapshot of a season's games.
+ *
+ * Created on every generation and every manual save. Nothing ever updates
+ * `snapshot` — restoring an old version writes a *new* version, so history only
+ * ever grows. Team, venue and official names are denormalized into the snapshot on
+ * purpose: a version has to render the same way in a year's time even if a team is
+ * renamed or a venue is removed.
+ */
+model ScheduleVersion {
+  id       String @id @default(cuid())
+  seasonId String
+  season   Season @relation("SeasonVersions", fields: [seasonId], references: [id], onDelete: Cascade)
+  /// Sequential within the season, starting at 1.
+  number   Int
+  label    String
+  note     String?
+  status   ScheduleVersionStatus @default(draft)
+  source   ScheduleVersionSource
+
+  authorId    String?
+  author      User?   @relation("VersionAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  /// Kept alongside authorId so the history still names someone after a user is removed.
+  authorLabel String
+
+  /// The frozen games. See `ScheduleSnapshot` in src/lib/versions/snapshot.ts.
+  snapshot Json
+  /// The scheduling config used, when this version came from a generation.
+  config   Json?
+
+  /// Set when `source` is `restore`: the version whose content was brought back.
+  restoredFromId String?
+  restoredFrom   ScheduleVersion?  @relation("RestoreChain", fields: [restoredFromId], references: [id], onDelete: SetNull)
+  restores       ScheduleVersion[] @relation("RestoreChain")
+
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  publishedById String?
+
+  publishedForSeason Season? @relation("SeasonPublishedVersion")
+
+  @@unique([seasonId, number])
+  @@index([seasonId, createdAt])
+  @@index([status])
 }

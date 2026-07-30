@@ -5,6 +5,7 @@ import { can } from '@/lib/authz'
 import { Alert, Card, EmptyState, PageHeader, RoleBadge } from '@/components/ui'
 import { CreateForm, Disclosure } from '@/components/crud-forms'
 import { calendarDateInZone, formatCalendarDate, formatClockInZone, formatInstantInZone } from '@/lib/time'
+import { readableSnapshot } from '@/lib/versions/service'
 
 export default async function SchedulePage({
   params,
@@ -17,6 +18,9 @@ export default async function SchedulePage({
   const { seasonId, divisionId } = await searchParams
   const { role, orgId } = await requireOrgAccess(orgSlug, 'schedule:read:published')
   const editable = can(role, 'schedule:edit')
+  // The same split the API enforces: privileged roles see the live working set,
+  // everyone else sees the published snapshot and nothing before it is published.
+  const canReadDrafts = can(role, 'schedule:read')
 
   const seasons = await prisma.season.findMany({
     where: { deletedAt: null, league: { orgId, deletedAt: null } },
@@ -38,7 +42,18 @@ export default async function SchedulePage({
       })
     : []
 
-  const games = activeSeason
+  const publishedVersion = activeSeason
+    ? (
+        await prisma.season.findUniqueOrThrow({
+          where: { id: activeSeason.id },
+          select: {
+            publishedVersion: { select: { id: true, number: true, label: true, publishedAt: true } },
+          },
+        })
+      ).publishedVersion
+    : null
+
+  const liveGames = activeSeason && canReadDrafts
     ? await prisma.game.findMany({
         where: {
           deletedAt: null,
@@ -59,7 +74,74 @@ export default async function SchedulePage({
       })
     : []
 
+  // A published read comes from the frozen snapshot, so a draft edit cannot leak.
+  const published = activeSeason && !canReadDrafts
+    ? await readableSnapshot(activeSeason.id, false)
+    : null
+
   const orgTimezone = (await prisma.organization.findUniqueOrThrow({ where: { id: orgId } })).timezone
+
+  type Row = {
+    id: string
+    startTime: Date
+    durationMinutes: number
+    status: string
+    roundNumber: number | null
+    homeScore: number | null
+    awayScore: number | null
+    homeTeam: { name: string }
+    awayTeam: { name: string }
+    division: { id: string; name: string }
+    field: { name: string; venue: { name: string; timezone: string } } | null
+    officials: Array<{ id: string; position: string; status: string; refereeName: string }>
+  }
+
+  const games: Row[] = canReadDrafts
+    ? liveGames.map((game) => ({
+        id: game.id,
+        startTime: game.startTime,
+        durationMinutes: game.durationMinutes,
+        status: game.status,
+        roundNumber: game.roundNumber,
+        homeScore: game.homeScore,
+        awayScore: game.awayScore,
+        homeTeam: game.homeTeam,
+        awayTeam: game.awayTeam,
+        division: game.division,
+        field: game.field
+          ? { name: game.field.name, venue: game.field.venue }
+          : null,
+        officials: game.officials.map((official) => ({
+          id: official.id,
+          position: official.position,
+          status: official.status,
+          refereeName: official.referee.person.name,
+        })),
+      }))
+    : (published?.snapshot?.games ?? [])
+        .filter((game) => !divisionId || game.divisionId === divisionId)
+        .map((game) => ({
+          id: game.gameId,
+          startTime: new Date(game.startTime),
+          durationMinutes: game.durationMinutes,
+          status: game.status,
+          roundNumber: game.roundNumber,
+          homeScore: game.homeScore,
+          awayScore: game.awayScore,
+          homeTeam: { name: game.homeTeamName },
+          awayTeam: { name: game.awayTeamName },
+          division: { id: game.divisionId, name: game.divisionName },
+          field:
+            game.fieldName && game.venueName && game.timezone
+              ? { name: game.fieldName, venue: { name: game.venueName, timezone: game.timezone } }
+              : null,
+          officials: game.officials.map((official, index) => ({
+            id: `${game.gameId}:${index}`,
+            position: official.position,
+            status: official.status,
+            refereeName: official.refereeName,
+          })),
+        }))
 
   /**
    * Grouped by the *venue's* local date, not the UTC date. An 8pm Pacific game on
@@ -104,6 +186,45 @@ export default async function SchedulePage({
         </EmptyState>
       ) : (
         <>
+          <div className="mb-6">
+            {canReadDrafts ? (
+              publishedVersion ? (
+                <Alert kind="info">
+                  You are looking at the <strong>working draft</strong>. Coaches, referees and
+                  viewers see <strong>v{publishedVersion.number}</strong> ({publishedVersion.label}).{' '}
+                  <Link
+                    href={`/app/${orgSlug}/seasons/${activeSeason?.id}/versions`}
+                    className="underline"
+                  >
+                    Version history
+                  </Link>
+                </Alert>
+              ) : (
+                <Alert>
+                  You are looking at the <strong>working draft</strong>, and nothing is published —
+                  so coaches, referees and viewers see no schedule at all.{' '}
+                  <Link
+                    href={`/app/${orgSlug}/seasons/${activeSeason?.id}/versions`}
+                    className="underline"
+                  >
+                    Publish a version
+                  </Link>
+                </Alert>
+              )
+            ) : published?.version ? (
+              <Alert kind="success">
+                Published schedule, v{published.version.number}
+                {published.version.publishedAt &&
+                  ` — published ${new Date(published.version.publishedAt).toLocaleDateString()}`}
+                .
+              </Alert>
+            ) : (
+              <Alert kind="info">
+                No schedule has been published for this season yet.
+              </Alert>
+            )}
+          </div>
+
           <Card className="mb-6">
             <form className="flex flex-wrap items-end gap-3" action={`/app/${orgSlug}/schedule`}>
               <div>
@@ -204,9 +325,14 @@ export default async function SchedulePage({
                                 )}
                               </td>
                               <td className="py-2 pr-4">
-                                <span className="font-medium">{game.homeTeam.name}</span>
-                                <span className="text-ink-500 dark:text-ink-400"> vs </span>
-                                <span className="font-medium">{game.awayTeam.name}</span>
+                                <Link
+                                  href={`/app/${orgSlug}/games/${game.id}`}
+                                  className="font-medium text-turf-600 hover:underline"
+                                >
+                                  {game.homeTeam.name}
+                                  <span className="font-normal text-ink-500 dark:text-ink-400"> vs </span>
+                                  {game.awayTeam.name}
+                                </Link>
                                 {game.homeScore !== null && game.awayScore !== null && (
                                   <span className="ml-2 tabular-nums text-ink-600 dark:text-ink-300">
                                     {game.homeScore}–{game.awayScore}
@@ -231,7 +357,7 @@ export default async function SchedulePage({
                                 ) : (
                                   game.officials.map((official) => (
                                     <div key={official.id}>
-                                      {official.referee.person.name}
+                                      {official.refereeName}
                                       <span className="text-ink-500 dark:text-ink-400">
                                         {' '}
                                         ({official.position}, {official.status})

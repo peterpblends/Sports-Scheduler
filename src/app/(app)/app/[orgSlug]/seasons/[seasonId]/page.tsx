@@ -75,14 +75,24 @@ export default async function SeasonPage({
         <Link href={`/app/${orgSlug}/leagues`} className="text-ink-500 hover:underline dark:text-ink-300">
           ← All leagues
         </Link>
-        {can(role, 'schedule:generate') && (
-          <Link
-            href={`/app/${orgSlug}/seasons/${seasonId}/generate`}
-            className="font-medium text-turf-600 hover:underline"
-          >
-            Generate schedule →
-          </Link>
-        )}
+        <span className="flex flex-wrap items-center gap-4">
+          {can(role, 'schedule:read') && (
+            <Link
+              href={`/app/${orgSlug}/seasons/${seasonId}/versions`}
+              className="text-ink-500 hover:underline dark:text-ink-300"
+            >
+              Version history
+            </Link>
+          )}
+          {can(role, 'schedule:generate') && (
+            <Link
+              href={`/app/${orgSlug}/seasons/${seasonId}/generate`}
+              className="font-medium text-turf-600 hover:underline"
+            >
+              Generate schedule →
+            </Link>
+          )}
+        </span>
       </div>
 
       {canEditStructure && (

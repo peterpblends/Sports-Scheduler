@@ -4,9 +4,9 @@ League scheduling for any sport: define teams, people, venues, officials and rul
 generate a season schedule that respects every hard constraint, then review,
 publish and roll back with a full audit trail.
 
-**Status: Phases 1–3 complete** — auth and accounts, the core data model with its CRUD
-surface and conflict checking, and the scheduling engine. Phases 4–6 — revision
-history, full UI, and import/export/notifications — are next.
+**Status: Phases 1–4 complete** — auth and accounts, the core data model with its CRUD
+surface and conflict checking, the scheduling engine, and revision history. Phases 5–6
+— the full UI, and import/export/notifications — are next.
 
 ## Stack
 
@@ -278,6 +278,70 @@ default one game per team per day allows 12 per team, so 48 fit and 24 do not. R
 `maxGamesPerTeamPerDay` to 2 for Saturday double-headers fits all 72. Both cases are
 covered in the tests.
 
+## Revision history
+
+Versioning is a first-class feature, not a log tacked on the side.
+
+### Schedule versions
+
+A `ScheduleVersion` is an **immutable snapshot** of a season's games, written on every
+generation and every manual save. It carries a per-season number, a label, an author,
+a timestamp, an optional note, and where it came from (`generated` / `manual_save` /
+`restore`).
+
+Snapshots denormalize every name they display — teams, venues, fields, officials —
+so a version renders the same way in a year's time even if a team is renamed or a venue
+is retired. Storing only ids would let old versions silently change meaning, which
+defeats the point.
+
+Nothing ever updates a snapshot. A restore writes a **new** version rather than
+deleting the ones after it, so history only ever grows: restoring v1 when v2 exists
+produces v3, and v1 and v2 both remain exactly as they were.
+
+### Diffing
+
+`diffSnapshots` is a pure function in
+[`src/lib/versions/snapshot.ts`](src/lib/versions/snapshot.ts). It reports games
+**added**, **removed**, **moved** (with the old and new time and field, and how many
+minutes it shifted), and **officials changed** (added, removed, and acceptance status).
+
+Matching runs in three passes, most reliable first: same row id, then same fixture
+(division + teams + round), then same pairing regardless of round. The fixture pass is
+what makes a regeneration readable — every `Game` row is replaced, so without it a
+regeneration would read as "72 removed, 72 added" instead of "these eight moved".
+Either side of a diff can be the literal `live`, which is how an admin sees what
+hand-editing has changed since the last save.
+
+### Publishing
+
+Publishing is explicit, and it is the only thing that changes what coaches, referees
+and viewers see. Exactly one version per season is published at a time; publishing a
+newer one archives the previous rather than deleting it.
+
+The read split is enforced in one place, `readableSnapshot`:
+
+| Holds | Sees |
+| --- | --- |
+| `schedule:read` (owner, admin, scheduler) | the live working draft |
+| only `schedule:read:published` (coach, referee, viewer) | the published version's snapshot |
+
+A published read is served **from the frozen snapshot, not from live rows**, so an
+edit made a second ago cannot leak through. Before anything is published, those roles
+see no schedule at all.
+
+### The audit trail
+
+Every mutation appends an `AuditEvent`: actor, timestamp, entity type and id, action,
+and a field-level before/after JSON diff. Generating a season writes one event per
+game and per assignment as well as the season-level event, so the per-game history
+panel is populated for generated games too — batched into a single insert to keep that
+affordable.
+
+Two UI surfaces read it: a **per-entity history panel** on the game detail page ("who
+changed this game and when", including any override reason recorded at the time), and a
+**global activity feed** filterable by actor, entity type and date range, with facet
+counts so the filters show what actually exists.
+
 ## Timezones
 
 Two kinds of value exist and [`src/lib/time.ts`](src/lib/time.ts) keeps them apart:
@@ -308,8 +372,8 @@ Getting this right up front was deliberate; it is painful to retrofit.
 npm test
 ```
 
-222 tests across nine files. The engine tests run purely off fixtures; the rest run
-against real Postgres so every authorization path is exercised as deployed. Route
+257 tests across ten files. The engine and diff tests run purely off fixtures; the
+rest run against real Postgres so every authorization path is exercised as deployed. Route
 handlers read cookies from the `Request` and write them onto the `Response` rather
 than going through `next/headers`, which keeps each one a pure `Request -> Response`
 function that tests can call directly without booting Next.
@@ -343,6 +407,11 @@ function that tests can call directly without booting Next.
   run writes nothing, committing retires the previous schedule into history rather
   than deleting it, played games survive a regeneration untouched, and real blackouts
   and conflict-of-interest links reach the engine.
+- **`tests/versions.test.ts`** — revision history, including both remaining acceptance
+  scenarios: regenerate, diff v1 against v2, restore v1 and confirm v3 holds v1's
+  content with the audit trail intact (5); and publish, then confirm a coach sees only
+  the published version while the draft moves on beneath them (6). Plus the pure diff,
+  snapshot immutability, and the filterable activity feed.
 
 ## Project layout
 
@@ -361,6 +430,9 @@ src/
     authz.ts             role -> permission matrix, escalation rules
     scope.ts             assert*InOrg tenant scoping; own-team / own-assignment scope
     conflicts.ts         hard-constraint checking for one game placement
+    versions/            revision history
+      snapshot.ts          snapshot shape and the pure diff
+      service.ts           create, publish, restore, and the read split
     scheduler/           the engine — pure; db.ts is its only Prisma boundary
       types.ts             config and entity inputs, result and report shapes
       config.ts            defaults, normalization, wire-format schema
@@ -404,8 +476,6 @@ serialization traps.
 
 ## Roadmap
 
-- **Phase 4** — schedule versions, side-by-side diffs, restore-as-new-version,
-  per-entity history, activity feed, explicit publishing.
 - **Phase 5** — dashboard, setup wizard, calendar/list/per-team views,
   drag-and-drop editing with override-and-log, referee assignment board, CSV
   roster import, public schedule page.

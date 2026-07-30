@@ -2,10 +2,11 @@ import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { badRequest, handler, parseBody, requirePermission } from '@/lib/http'
 import { assertSeasonInOrg } from '@/lib/scope'
-import { recordAudit } from '@/lib/audit'
+import { recordAudit, recordAuditMany, type AuditInput } from '@/lib/audit'
 import { generateSchedule, scheduleConfigSchema } from '@/lib/scheduler'
 import { loadSchedulerInput } from '@/lib/scheduler/db'
 import { formatInstantInZone } from '@/lib/time'
+import { createVersion } from '@/lib/versions/service'
 import type { Prisma } from '@prisma/client'
 
 type Ctx = { params: Promise<{ orgId: string; seasonId: string }> }
@@ -28,9 +29,9 @@ const bodySchema = z.object({
  * config does not list as preserved — inside a single transaction, and records one
  * audit event describing the whole generation.
  *
- * Phase 4 will wrap the commit in an immutable ScheduleVersion; for now the audit
- * event carries the config, the seed and the counts, so a regeneration is already
- * traceable.
+ * Every commit also freezes an immutable `ScheduleVersion`, so a regeneration can be
+ * diffed against what came before and rolled back later. The version starts as a
+ * draft — publishing it is a separate, explicit act.
  */
 export const POST = handler<Ctx>(async (req, ctx) => {
   const { orgId, seasonId } = await ctx.params
@@ -97,6 +98,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
     report: result.report,
     preview,
     written,
+    version: written.version,
   })
 })
 
@@ -113,7 +115,12 @@ async function commitSchedule(input: {
   actor: { userId: string; email: string }
   result: ReturnType<typeof generateSchedule>
   note?: string
-}): Promise<{ created: number; retired: number; assignments: number }> {
+}): Promise<{
+  created: number
+  retired: number
+  assignments: number
+  version: { id: string; number: number; label: string }
+}> {
   const { orgId, seasonId, actor, result } = input
   const preserveIds = new Set(
     result.games.filter((game) => game.preserved && game.existingId).map((game) => game.existingId!),
@@ -138,6 +145,10 @@ async function commitSchedule(input: {
 
     // Insert the new games, keeping the engine's index order so assignments line up.
     const createdIds: (string | null)[] = []
+    // One audit event per game, batched. A generated game is a created entity, so it
+    // gets its own history like any other.
+    const gameEvents: AuditInput[] = []
+
     for (const game of result.games) {
       if (game.preserved) {
         createdIds.push(game.existingId)
@@ -164,6 +175,28 @@ async function commitSchedule(input: {
         select: { id: true },
       })
       createdIds.push(created.id)
+
+      gameEvents.push({
+        orgId,
+        actorId: actor.userId,
+        actorLabel: actor.email,
+        entityType: 'Game',
+        entityId: created.id,
+        action: 'game.created',
+        diff: {
+          startTime: { before: null, after: game.startTime.toISOString() },
+          fieldId: { before: null, after: game.fieldId },
+          roundNumber: { before: null, after: game.roundNumber },
+        },
+        meta: {
+          via: 'generation',
+          seasonId,
+          divisionId: game.divisionId,
+          homeTeamId: game.homeTeamId,
+          awayTeamId: game.awayTeamId,
+          seed: result.config.seed,
+        },
+      })
     }
 
     let assignments = 0
@@ -178,12 +211,41 @@ async function commitSchedule(input: {
           payRateCentsOverride: null,
         },
       })
+      gameEvents.push({
+        orgId,
+        actorId: actor.userId,
+        actorLabel: actor.email,
+        entityType: 'GameOfficial',
+        entityId: gameId,
+        action: 'official.assigned',
+        diff: {
+          refereeId: { before: null, after: assignment.refereeId },
+          position: { before: null, after: assignment.position },
+        },
+        meta: { via: 'generation', gameId, refereeId: assignment.refereeId },
+      })
       assignments += 1
     }
+
+    await recordAuditMany(gameEvents, tx)
 
     const created = createdIds.filter(
       (id, index) => id !== null && !result.games[index]!.preserved,
     ).length
+
+    // Freeze what was just written. Created after the inserts so the snapshot is of
+    // the schedule as it now stands, not as it was a moment ago.
+    const version = await createVersion(
+      {
+        orgId,
+        seasonId,
+        actor,
+        source: 'generated',
+        note: input.note,
+        config: result.config as unknown as Prisma.InputJsonValue,
+      },
+      tx,
+    )
 
     await recordAudit(
       {
@@ -198,6 +260,8 @@ async function commitSchedule(input: {
         },
         meta: {
           note: input.note ?? null,
+          versionId: version.id,
+          versionNumber: version.number,
           seed: result.config.seed,
           config: result.config as unknown as Prisma.InputJsonValue,
           counts: result.report.counts,
@@ -213,6 +277,8 @@ async function commitSchedule(input: {
       tx,
     )
 
-    return { created, retired: staleIds.length, assignments }
-  })
+    return { created, retired: staleIds.length, assignments, version }
+    // Generation of a full season writes many rows; the default 5s transaction
+    // timeout is not enough for a large league.
+  }, { timeout: 120_000 })
 }

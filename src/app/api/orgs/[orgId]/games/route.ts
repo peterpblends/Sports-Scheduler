@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { HttpError, badRequest, handler, parseBody, requirePermission } from '@/lib/http'
+import { can } from '@/lib/authz'
+import { readableSnapshot } from '@/lib/versions/service'
 import { createGameSchema } from '@/lib/validation'
 import { createWithAudit } from '@/lib/crud'
 import { assertDivisionInOrg, assertFieldInOrg, assertSeasonInOrg, assertTeamInOrg } from '@/lib/scope'
@@ -23,11 +25,18 @@ const snapshot = (g: Game) => ({
   notes: g.notes,
 })
 
+/**
+ * Lists games.
+ *
+ * Which schedule a caller gets depends on their role, and this is the split the spec
+ * requires: roles holding `schedule:read` see the live working set, everyone else sees
+ * the **published version's snapshot** and nothing at all if the season has never been
+ * published. A coach or referee therefore cannot see a draft, however they ask.
+ */
 export const GET = handler<Ctx>(async (req, ctx) => {
   const { orgId } = await ctx.params
-  // Phase 4 splits this into draft vs published reads; for now any member who can
-  // read a schedule can list games.
-  await requirePermission(req, orgId, 'schedule:read:published')
+  const { role } = await requirePermission(req, orgId, 'schedule:read:published')
+  const canReadDrafts = can(role, 'schedule:read')
 
   const params = new URL(req.url).searchParams
   const seasonId = params.get('seasonId')
@@ -39,6 +48,58 @@ export const GET = handler<Ctx>(async (req, ctx) => {
   if (seasonId) await assertSeasonInOrg(orgId, seasonId)
   if (divisionId) await assertDivisionInOrg(orgId, divisionId)
   if (teamId) await assertTeamInOrg(orgId, teamId)
+
+  if (!canReadDrafts) {
+    // A published read is served from the frozen snapshot, not from live rows, so a
+    // draft edit made a second ago cannot leak through.
+    if (!seasonId) throw badRequest('Pass seasonId to read a published schedule.')
+    const { snapshot, source, version } = await readableSnapshot(seasonId, false)
+
+    const games = (snapshot?.games ?? [])
+      .filter((game) => !divisionId || game.divisionId === divisionId)
+      .filter((game) => !teamId || game.homeTeamId === teamId || game.awayTeamId === teamId)
+      .filter((game) => !from || game.startTime >= new Date(from).toISOString())
+      .filter((game) => !to || game.startTime <= new Date(to).toISOString())
+
+    return Response.json({
+      source,
+      publishedVersion: version,
+      games: games.map((game) => ({
+        id: game.gameId,
+        seasonId,
+        divisionId: game.divisionId,
+        homeTeamId: game.homeTeamId,
+        awayTeamId: game.awayTeamId,
+        fieldId: game.fieldId,
+        startTime: game.startTime,
+        durationMinutes: game.durationMinutes,
+        status: game.status,
+        roundNumber: game.roundNumber,
+        homeScore: game.homeScore,
+        awayScore: game.awayScore,
+        notes: game.notes,
+        homeTeam: { id: game.homeTeamId, name: game.homeTeamName },
+        awayTeam: { id: game.awayTeamId, name: game.awayTeamName },
+        division: { id: game.divisionId, name: game.divisionName },
+        field: game.fieldId
+          ? {
+              id: game.fieldId,
+              name: game.fieldName,
+              venue: { id: game.venueId, name: game.venueName, timezone: game.timezone },
+            }
+          : null,
+        localStartTime: game.timezone
+          ? formatInstantInZone(new Date(game.startTime), game.timezone)
+          : null,
+        officials: game.officials.map((official) => ({
+          id: `${game.gameId}:${official.position}`,
+          position: official.position,
+          status: official.status,
+          referee: { id: official.refereeId, name: official.refereeName },
+        })),
+      })),
+    })
+  }
 
   const games = await prisma.game.findMany({
     where: {
@@ -71,6 +132,8 @@ export const GET = handler<Ctx>(async (req, ctx) => {
   })
 
   return Response.json({
+    source: 'live',
+    publishedVersion: null,
     games: games.map((g) => ({
       id: g.id,
       seasonId: g.seasonId,

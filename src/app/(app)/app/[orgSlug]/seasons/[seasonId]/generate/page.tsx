@@ -44,14 +44,20 @@ export default async function GeneratePage({
         subtitle={`${season.league.name} · ${season.name} · ${formatCalendarDate(season.startDate)} → ${formatCalendarDate(season.endDate)}`}
       />
 
-      <p className="mb-6 text-sm">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 text-sm">
         <Link
           href={`/app/${orgSlug}/seasons/${seasonId}`}
           className="text-ink-500 hover:underline dark:text-ink-300"
         >
           ← {season.name}
         </Link>
-      </p>
+        <Link
+          href={`/app/${orgSlug}/seasons/${seasonId}/versions`}
+          className="font-medium text-turf-600 hover:underline"
+        >
+          Version history →
+        </Link>
+      </div>
 
       <div className="mb-6 grid gap-4 sm:grid-cols-4">
         {[

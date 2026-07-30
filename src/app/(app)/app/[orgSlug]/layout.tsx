@@ -26,6 +26,7 @@ export default async function OrgLayout({
     { href: `/app/${orgSlug}/venues`, label: 'Venues', show: can(membership.role, 'venue:read') },
     { href: `/app/${orgSlug}/people`, label: 'People', show: can(membership.role, 'roster:read') },
     { href: `/app/${orgSlug}/members`, label: 'Members', show: can(membership.role, 'member:read') },
+    { href: `/app/${orgSlug}/activity`, label: 'Activity', show: can(membership.role, 'audit:read') },
     { href: '/account', label: 'Account', show: true },
   ].filter((item) => item.show)
 
