@@ -76,6 +76,13 @@ The seed script is idempotent — re-running soft-deletes the previous set rathe
 dropping it, so the audit trail survives — and prints a live invitation-accept link
 each run.
 
+## Deploying
+
+See [DEPLOYMENT.md](DEPLOYMENT.md). Short version: add a `DATABASE_URL` and a
+`VERCEL_TOKEN` to the repository's Actions secrets, then run the **Deploy** workflow.
+It applies migrations, builds, deploys, and polls the resulting URL until it answers
+200 — so a green run means the app is up, not just that the upload worked.
+
 ## Scripts
 
 | Command | Does |
