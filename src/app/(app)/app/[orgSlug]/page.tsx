@@ -11,6 +11,7 @@ import {
   RefereeDashboardView,
   ViewerDashboardView,
 } from '@/components/dashboards'
+import { QuickStart } from '@/components/quick-start'
 import { formatInstantInZone } from '@/lib/time'
 
 /**
@@ -81,9 +82,24 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
         })
       : null
 
+    // Opened for someone who has nothing on their plate yet: no referee record at
+    // all, or a record with no games either way. That is exactly when the four steps
+    // are worth reading, and it closes itself once they are officiating.
+    const refereeIsNew =
+      !referee ||
+      !board ||
+      board.accepted.length + board.awaitingAnswer.length + board.pendingRequests.length === 0
+
     return (
       <>
         {header}
+        <QuickStart
+          role={role}
+          orgSlug={orgSlug}
+          publicSlug={org.slug}
+          seasonId={season?.id ?? null}
+          defaultOpen={refereeIsNew}
+        />
         <RefereeDashboardView
           board={board}
           orgSlug={orgSlug}
@@ -106,6 +122,16 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
     return (
       <>
         {header}
+        <QuickStart
+          role={role}
+          orgSlug={orgSlug}
+          publicSlug={org.slug}
+          seasonId={season?.id ?? null}
+          teamId={data.teams[0]?.id ?? null}
+          // A coach with no team yet, or no fixtures to look at, is the one who needs
+          // telling where things are.
+          defaultOpen={data.teams.length === 0 || data.upcoming.length === 0}
+        />
         <CoachDashboardView data={data} orgSlug={orgSlug} />
       </>
     )
@@ -123,6 +149,15 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
     return (
       <>
         {header}
+        <QuickStart
+          role={role}
+          orgSlug={orgSlug}
+          publicSlug={org.slug}
+          seasonId={season?.id ?? null}
+          // Nothing published means an empty page; the guide explains why rather than
+          // leaving them staring at it.
+          defaultOpen={data.source === 'none' || data.upcoming.length === 0}
+        />
         <ViewerDashboardView data={data} orgSlug={orgSlug} publicSlug={org.slug} />
       </>
     )
@@ -178,6 +213,17 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
   return (
     <>
       {header}
+
+      <QuickStart
+        role={role}
+        orgSlug={orgSlug}
+        publicSlug={org.slug}
+        seasonId={season?.id ?? null}
+        // Open while the org is genuinely unfinished: not ready to schedule, no
+        // season yet, or a draft that has never been published — the publish step is
+        // the one organizers most often miss, and it is invisible until told.
+        defaultOpen={!setupDone || !season || (season._count.games > 0 && !season.publishedVersion)}
+      />
 
       {!setupDone && can(role, 'structure:write') && (
         <div className="mb-6">

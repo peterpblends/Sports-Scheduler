@@ -593,6 +593,22 @@ serialization traps.
 
 ## What each role sees
 
+Every dashboard opens with a **Quick start** card: three to six numbered steps for
+that role, each linking to the page that does the thing. It is a native `<details>`
+disclosure — no JavaScript, so it works before hydration and cannot flash open then
+shut on a phone — and it expands itself only when the state says it is needed: an
+organization that is not ready to schedule, a season with nothing published, a referee
+with no games, a coach on no team. Somebody who has already done the work gets a
+one-line collapsed summary instead. That is why there is no "don't show this again":
+the condition *is* the dismissal, so nothing is stored and nothing goes stale.
+
+Steps are gated on **permission, not page availability**, which is a real distinction
+here: `/setup` needs only `structure:read`, so a coach can open it and find every
+control refused. A scheduler, who lacks `structure:write`, gets a field-availability
+step in place of the setup checklist — they are the ones who run generation, and a
+field with no declared hours is the usual reason it comes back with nothing placed.
+`tests/quick-start.test.ts` asserts no role is ever linked somewhere it cannot act.
+
 The dashboard is chosen by role, from the same permission matrix the server enforces
 ([`src/app/(app)/app/[orgSlug]/page.tsx`](src/app/\(app\)/app/[orgSlug]/page.tsx)
 dispatches; the loaders are in [`src/lib/dashboard.ts`](src/lib/dashboard.ts)). Each
