@@ -222,7 +222,7 @@ export default async function SetupPage({ params }: { params: Promise<{ orgSlug:
                     className={clsx(
                       'mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full text-xs font-semibold',
                       step.done
-                        ? 'bg-turf-600 text-white'
+                        ? 'bg-gold text-ink-900'
                         : 'border border-ink-300 text-ink-500 dark:border-ink-600 dark:text-ink-400',
                     )}
                   >

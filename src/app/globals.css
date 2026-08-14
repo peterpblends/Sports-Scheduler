@@ -1,19 +1,67 @@
 @import 'tailwindcss';
 
+/*
+ * Dark mode is driven by an explicit `data-theme` attribute on <html>, not the
+ * `prefers-color-scheme` media query Tailwind defaults `dark:` to. This is what lets
+ * a user override their OS setting (Light/Dark/Auto toggle) instead of only ever
+ * following it. `theme-toggle.tsx` sets the attribute; a blocking inline script in the
+ * root layout sets it before first paint so there is no flash of the wrong theme.
+ * "Auto" is resolved to a concrete value in JS and written into the same attribute —
+ * the CSS below only ever has one thing to check, not two.
+ *
+ * `:where(...)` keeps this at zero specificity, same as Tailwind's own class-based
+ * `dark:` variant, so ordinary utility precedence rules still apply everywhere.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
-  --color-ink-50: #f6f7f9;
-  --color-ink-100: #eceef2;
-  --color-ink-200: #d5d9e2;
-  --color-ink-300: #b0b8c7;
-  --color-ink-400: #7d8798;
-  --color-ink-500: #5b6577;
-  --color-ink-600: #454e5e;
-  --color-ink-700: #363d4a;
-  --color-ink-800: #232936;
-  --color-ink-900: #151a24;
-  --color-turf-500: #158f4a;
-  --color-turf-600: #0f7a3e;
-  --color-turf-700: #0b6132;
+  /*
+   * Chalk & Iron — a warm neutral ramp, lightest at 50 to darkest at 900. Every
+   * existing `ink-N` / `dark:ink-N` class name throughout the app is unchanged; only
+   * the hex values moved from a cool slate-blue to this warm family. Dark mode was
+   * already built by picking a *different step* of this ramp per context (light text
+   * uses ink-500, its dark-mode equivalent uses ink-300, etc.) — never by inverting a
+   * single step — so retexturing the ramp is safe without touching every call site.
+   */
+  --color-ink-50: #f7f5f1;
+  --color-ink-100: #eeebe4;
+  --color-ink-200: #dfdace;
+  --color-ink-300: #c7bfaf;
+  --color-ink-400: #a69c89;
+  --color-ink-500: #7d7362;
+  --color-ink-600: #5c5447;
+  --color-ink-700: #453f35;
+  --color-ink-800: #2b2721;
+  --color-ink-900: #171512;
+
+  /*
+   * Brand accent — "Gold Text": readable gold for links, borders, focus rings and
+   * tinted badges. `turf-500` stays one vivid, constant value in both themes (it is
+   * mostly used as a low-opacity tint or a border, which reads fine as gold either
+   * way). `turf-600` is the one token that differs by theme below — most of its ~50
+   * call sites are a bare `text-turf-600` with no paired `dark:` override, so the
+   * token itself has to carry the difference: a flat #F2B01E is legible text on a
+   * near-black surface but fails contrast on a light one (~1.9:1), which is exactly
+   * why the deeper, muted value is the light-mode default here.
+   */
+  --color-turf-500: #f2b01e;
+  --color-turf-600: #8a6100;
+  --color-turf-700: #8a6100;
+
+  /*
+   * Solid gold fills — buttons and active pills, where the surface itself never
+   * inverts (only its surroundings do). `ink-900` doubles as "text on gold": it is a
+   * fixed near-black regardless of theme, which is exactly what a gold background
+   * needs underneath it in both light and dark contexts.
+   */
+  --color-gold: #f2b01e;
+  --color-gold-dark: #d89a12;
+}
+
+/* The one token above that differs by theme. Same specificity as `@theme`'s :root
+   output, so this must come after it in source order to win. */
+[data-theme='dark'] {
+  --color-turf-600: #f2b01e;
 }
 
 :root {
@@ -21,13 +69,7 @@
 }
 
 body {
-  @apply bg-ink-50 text-ink-900 antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  body {
-    @apply bg-ink-900 text-ink-100;
-  }
+  @apply bg-ink-50 text-ink-900 antialiased dark:bg-ink-900 dark:text-ink-100;
 }
 
 /* ---------------------------------------------------------------------------

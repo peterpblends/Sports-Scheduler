@@ -42,7 +42,7 @@ export const POST = handler(async (req) => {
     const link = appUrl(`/reset-password?token=${encodeURIComponent(token)}`)
     await mailer().send({
       to: user.email,
-      subject: 'Reset your Sports Scheduler password',
+      subject: 'Reset your password on THE YARD',
       text: `Hi ${user.name},\n\nUse this link within ${TTL_MINUTES} minutes to choose a new password:\n\n${link}\n\nIf you did not ask for this, you can ignore this email.\n`,
     })
   }

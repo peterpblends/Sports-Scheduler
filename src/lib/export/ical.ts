@@ -94,7 +94,7 @@ export function buildIcal(calendar: IcalCalendar): string {
   const lines: string[] = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Sports Scheduler//EN',
+    'PRODID:-//THE YARD//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${escapeText(calendar.name)}`,

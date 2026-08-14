@@ -2,6 +2,8 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getActor } from '@/lib/auth-server'
 import { buttonClass, secondaryButtonClass } from '@/components/ui'
+import { YardMark } from '@/components/logo'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 export default async function Home() {
   const actor = await getActor()
@@ -9,7 +11,11 @@ export default async function Home() {
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-3xl flex-col justify-center px-6 py-16">
-      <p className="text-sm font-medium uppercase tracking-widest text-turf-600">Sports Scheduler</p>
+      <div className="mb-6 flex items-center justify-between">
+        <YardMark size={32} />
+        <ThemeToggle />
+      </div>
+      <p className="text-sm font-medium tracking-widest text-turf-600 uppercase">THE YARD</p>
       <h1 className="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl">
         Build a season schedule that holds up.
       </h1>

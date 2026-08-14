@@ -7,6 +7,8 @@ import { refereeForUser, staffTeams } from '@/lib/scope'
 import { RoleBadge } from '@/components/ui'
 import { SignOutButton } from '@/components/app-forms'
 import { BottomNav, type BottomNavIcon, type BottomNavItem } from '@/components/bottom-nav'
+import { YardLockup } from '@/components/logo'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 export default async function OrgLayout({
   children,
@@ -169,11 +171,8 @@ export default async function OrgLayout({
       <header className="border-b border-ink-200 bg-white dark:border-ink-700 dark:bg-ink-800">
         <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <Link
-              href="/app"
-              className="inline-flex items-center py-1 text-sm font-semibold uppercase tracking-widest text-turf-600"
-            >
-              Sports Scheduler
+            <Link href="/app" className="inline-flex items-center py-1">
+              <YardLockup size={22} />
             </Link>
 
             <div className="flex items-center gap-2 text-sm">
@@ -206,6 +205,7 @@ export default async function OrgLayout({
                 </div>
               )}
               <span className="text-sm text-ink-500 dark:text-ink-300">{actor.email}</span>
+              <ThemeToggle />
               <SignOutButton />
             </div>
 
@@ -242,6 +242,9 @@ export default async function OrgLayout({
                 <div className="mt-2 flex items-center justify-between border-t border-ink-200 pt-2 dark:border-ink-700">
                   <span className="px-1 text-xs text-ink-500 dark:text-ink-300">{actor.email}</span>
                   <SignOutButton />
+                </div>
+                <div className="mt-2 flex justify-center border-t border-ink-200 pt-3 dark:border-ink-700">
+                  <ThemeToggle />
                 </div>
               </nav>
             </details>

@@ -106,7 +106,7 @@ export default async function OfficiatingPage({
                   href={`/app/${orgSlug}/officiating?seasonId=${candidate.id}`}
                   className={
                     candidate.id === season.id
-                      ? 'rounded-full bg-turf-600 px-3 py-1 text-white'
+                      ? 'rounded-full bg-gold px-3 py-1 text-ink-900'
                       : 'rounded-full border border-ink-300 px-3 py-1 text-ink-600 hover:border-turf-500 dark:border-ink-600 dark:text-ink-300'
                   }
                 >

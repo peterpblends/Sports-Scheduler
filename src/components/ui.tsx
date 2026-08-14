@@ -40,8 +40,13 @@ export const inputClass =
 // min-h-11 (44px) on all three: referees and coaches use these standing in a
 // parking lot on a phone, and py-2 alone lands under both Apple's and Material's
 // tap-target guidance.
+//
+// `bg-gold`/`text-ink-900` rather than `turf-600`/`text-white`: the primary button is
+// a solid brand-gold fill, which needs the constant vivid gold and a constant dark
+// on-gold text — not the theme-flipping "readable gold text" `turf-600` resolves to
+// elsewhere, which would read as a muddy brown fill in light mode.
 export const buttonClass =
-  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-turf-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-turf-700 focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-gold px-4 py-2.5 text-sm font-medium text-ink-900 transition hover:bg-gold-dark focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
 
 export const secondaryButtonClass =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink-300 bg-white px-4 py-2.5 text-sm font-medium text-ink-700 transition hover:bg-ink-100 disabled:opacity-60 dark:border-ink-600 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700'

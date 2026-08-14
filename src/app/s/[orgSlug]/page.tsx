@@ -6,6 +6,8 @@ import { readSchedule } from '@/lib/schedule/read'
 import { ScheduleList } from '@/components/schedule-views'
 import { Card, EmptyState } from '@/components/ui'
 import { formatCalendarDate } from '@/lib/time'
+import { YardMark } from '@/components/logo'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 /**
  * The public schedule (acceptance scenario 6, logged-out half).
@@ -100,8 +102,12 @@ export default async function PublicSchedulePage({
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
+      <div className="mb-4 flex items-center justify-between">
+        <YardMark size={28} />
+        <ThemeToggle />
+      </div>
       <header className="border-b border-ink-200 pb-6 dark:border-ink-700">
-        <p className="text-xs font-medium uppercase tracking-widest text-turf-600">
+        <p className="text-xs font-medium tracking-widest text-turf-600 uppercase">
           {season.league.sport} · published schedule
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">{org.name}</h1>

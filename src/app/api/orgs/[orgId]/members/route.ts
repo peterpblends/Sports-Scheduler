@@ -104,7 +104,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
   const link = appUrl(`/accept-invite?token=${encodeURIComponent(token)}`)
   await mailer().send({
     to: email,
-    subject: `${actor.name} invited you to ${org.name} on Sports Scheduler`,
+    subject: `${actor.name} invited you to ${org.name} on THE YARD`,
     text: `${actor.name} (${actor.email}) invited you to join ${org.name} as ${role}.\n\nAccept the invitation here — the link is good for ${INVITE_TTL_DAYS} days:\n\n${link}\n`,
   })
 

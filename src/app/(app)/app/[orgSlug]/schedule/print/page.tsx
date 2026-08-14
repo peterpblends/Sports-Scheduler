@@ -177,7 +177,7 @@ export default async function PrintSchedulePage({
       )}
 
       <footer className="print-footer mt-8 border-t border-ink-300 pt-3 text-xs text-ink-500 dark:text-ink-400">
-        {orgName} · {season.league.name} {season.name} · printed from Sports Scheduler
+        {orgName} · {season.league.name} {season.name} · printed from THE YARD
       </footer>
     </div>
   )

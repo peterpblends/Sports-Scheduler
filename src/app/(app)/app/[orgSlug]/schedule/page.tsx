@@ -254,7 +254,7 @@ export default async function SchedulePage({
                 aria-current={view === candidate ? 'page' : undefined}
                 className={
                   view === candidate
-                    ? 'rounded-lg bg-turf-600 px-3 py-1.5 text-sm font-medium text-white'
+                    ? 'rounded-lg bg-gold px-3 py-1.5 text-sm font-medium text-ink-900'
                     : 'rounded-lg border border-ink-300 px-3 py-1.5 text-sm dark:border-ink-600'
                 }
               >
@@ -286,7 +286,7 @@ export default async function SchedulePage({
               className={
                 editing
                   ? 'rounded-lg border border-ink-300 px-3 py-1.5 dark:border-ink-600'
-                  : 'rounded-lg bg-turf-600 px-3 py-1.5 font-medium text-white'
+                  : 'rounded-lg bg-gold px-3 py-1.5 font-medium text-ink-900'
               }
             >
               {editing ? 'Done editing' : 'Rearrange games'}
