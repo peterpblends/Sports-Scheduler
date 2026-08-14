@@ -6,6 +6,7 @@ import { can } from '@/lib/authz'
 import { refereeForUser, staffTeams } from '@/lib/scope'
 import { RoleBadge } from '@/components/ui'
 import { SignOutButton } from '@/components/app-forms'
+import { BottomNav, type BottomNavIcon, type BottomNavItem } from '@/components/bottom-nav'
 
 export default async function OrgLayout({
   children,
@@ -114,6 +115,55 @@ export default async function OrgLayout({
 
   const otherOrgs = actor.memberships.filter((m) => m.orgSlug !== orgSlug)
 
+  /**
+   * The bottom tab bar's four-or-fewer non-Dashboard slots, picked per role rather
+   * than mechanically sliced off the drawer list above — "most relevant" for a
+   * scheduler (generate, assign officials, keep fields current) is a different set
+   * than for an owner (schedule, assign, invite people) or a coach (their team,
+   * the schedule, alerts). Looked up by label against the already permission-
+   * filtered `nav` array above, so a role that lacks a permission simply doesn't
+   * get that tab — the same guarantee the drawer has, from the same source.
+   */
+  const bottomLabels: string[] =
+    role === 'owner' || role === 'admin'
+      ? ['Schedule', 'Officiating', 'Members', 'Account']
+      : role === 'scheduler'
+        ? ['Schedule', 'Officiating', 'Venues', 'Account']
+        : role === 'coach'
+          ? [...(ownTeams.length === 1 ? ['My team'] : []), 'Schedule', 'Alerts', 'Account']
+          : role === 'referee'
+            ? ['My games', 'Schedule', 'Alerts', 'Account']
+            : ['Schedule', 'Alerts', 'Account']
+
+  const BOTTOM_ICONS: Record<string, BottomNavIcon> = {
+    'My games': 'officiating',
+    'My team': 'team',
+    Schedule: 'schedule',
+    Officiating: 'officiating',
+    Venues: 'venues',
+    Members: 'members',
+    Alerts: 'alerts',
+    Account: 'account',
+  }
+
+  const dashboardNav = nav.find((item) => item.label === 'Dashboard')
+  const bottomExtras = bottomLabels
+    .map((label) => nav.find((item) => item.label === label))
+    .filter((item): item is (typeof nav)[number] => item !== undefined)
+    .map((item) => ({ ...item, icon: BOTTOM_ICONS[item.label] ?? 'account' }) satisfies BottomNavItem)
+
+  // Dashboard goes in the middle, whatever else made the cut splits around it —
+  // biased one extra to the left when the count is odd, so home stays the visual
+  // anchor rather than drifting to whichever side has more items.
+  const leftCount = Math.ceil(bottomExtras.length / 2)
+  const bottomItems: BottomNavItem[] = dashboardNav
+    ? [
+        ...bottomExtras.slice(0, leftCount),
+        { ...dashboardNav, icon: 'dashboard', exact: true } satisfies BottomNavItem,
+        ...bottomExtras.slice(leftCount),
+      ]
+    : bottomExtras
+
   return (
     <div className="min-h-dvh">
       <header className="border-b border-ink-200 bg-white dark:border-ink-700 dark:bg-ink-800">
@@ -199,7 +249,13 @@ export default async function OrgLayout({
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">{children}</main>
+      {/* Extra bottom padding only matters below md, where the tab bar is fixed over
+          the content — without it the last card on a page sits partly behind the
+          bar. `env(safe-area-inset-bottom)` on the bar itself already covers the
+          iOS home-indicator gap; this covers the bar's own height on top of that. */}
+      <main className="mx-auto max-w-6xl px-4 py-8 pb-24 sm:px-6 md:pb-8">{children}</main>
+
+      {bottomItems.length > 0 && <BottomNav items={bottomItems} />}
     </div>
   )
 }
