@@ -37,14 +37,17 @@ export function Label({ children, htmlFor }: { children: ReactNode; htmlFor?: st
 export const inputClass =
   'w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm outline-none placeholder:text-ink-400 focus:border-turf-500 focus:ring-2 focus:ring-turf-500/20 dark:border-ink-600 dark:bg-ink-900'
 
+// min-h-11 (44px) on all three: referees and coaches use these standing in a
+// parking lot on a phone, and py-2 alone lands under both Apple's and Material's
+// tap-target guidance.
 export const buttonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg bg-turf-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-turf-700 focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-turf-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-turf-700 focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
 
 export const secondaryButtonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg border border-ink-300 bg-white px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-100 disabled:opacity-60 dark:border-ink-600 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink-300 bg-white px-4 py-2.5 text-sm font-medium text-ink-700 transition hover:bg-ink-100 disabled:opacity-60 dark:border-ink-600 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700'
 
 export const dangerButtonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-60 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-60 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40'
 
 export function Alert({ kind = 'error', children }: { kind?: 'error' | 'success' | 'info'; children: ReactNode }) {
   return (

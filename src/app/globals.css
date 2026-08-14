@@ -60,6 +60,12 @@ body {
     padding: 0 !important;
   }
 
+  /* The screen-only horizontal-scroll wrapper around the schedule table must not
+     clip anything on paper — print has no viewport width to scroll within. */
+  .no-print-scroll {
+    overflow: visible !important;
+  }
+
   .print-root * {
     color: #000 !important;
     border-color: #999 !important;

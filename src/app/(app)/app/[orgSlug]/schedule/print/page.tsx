@@ -122,50 +122,55 @@ export default async function PrintSchedulePage({
                   {day.rows.length} game{day.rows.length === 1 ? '' : 's'}
                 </span>
               </h2>
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-ink-300 text-left text-xs uppercase tracking-wide">
-                    <th className="py-1 pr-3 font-medium">Time</th>
-                    <th className="py-1 pr-3 font-medium">Division</th>
-                    <th className="py-1 pr-3 font-medium">Match</th>
-                    <th className="py-1 pr-3 font-medium">Venue</th>
-                    {showOfficials && <th className="py-1 font-medium">Officials</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {day.rows.map((row) => (
-                    <tr key={row.id} className="print-row border-b border-ink-200">
-                      <td className="py-1 pr-3 whitespace-nowrap tabular-nums">
-                        {formatClockInZone(row.startTime, row.timezone)}
-                      </td>
-                      <td className="py-1 pr-3 text-xs">
-                        {row.divisionName}
-                        {row.roundNumber !== null && ` · r${row.roundNumber}`}
-                      </td>
-                      <td className="py-1 pr-3">
-                        {row.homeTeamName} v {row.awayTeamName}
-                        {row.homeScore !== null && row.awayScore !== null && (
-                          <span className="ml-2 tabular-nums">
-                            {row.homeScore}–{row.awayScore}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-1 pr-3 text-xs">
-                        {row.venueName ? `${row.venueName} · ${row.fieldName}` : 'unplaced'}
-                      </td>
-                      {showOfficials && (
-                        <td className="py-1 text-xs">
-                          {row.officials.length === 0
-                            ? '—'
-                            : row.officials
-                                .map((official) => `${official.refereeName} (${official.position})`)
-                                .join(', ')}
-                        </td>
-                      )}
+              {/* Screen-only scroll wrapper: on paper the table is meant to run full width,
+                  but on a phone (checking this before printing) it needs the same
+                  horizontal-scroll safety net every other schedule table has. */}
+              <div className="no-print-scroll overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-ink-300 text-left text-xs uppercase tracking-wide">
+                      <th className="py-1 pr-3 font-medium">Time</th>
+                      <th className="py-1 pr-3 font-medium">Division</th>
+                      <th className="py-1 pr-3 font-medium">Match</th>
+                      <th className="py-1 pr-3 font-medium">Venue</th>
+                      {showOfficials && <th className="py-1 font-medium">Officials</th>}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {day.rows.map((row) => (
+                      <tr key={row.id} className="print-row border-b border-ink-200">
+                        <td className="py-1 pr-3 whitespace-nowrap tabular-nums">
+                          {formatClockInZone(row.startTime, row.timezone)}
+                        </td>
+                        <td className="py-1 pr-3 text-xs">
+                          {row.divisionName}
+                          {row.roundNumber !== null && ` · r${row.roundNumber}`}
+                        </td>
+                        <td className="py-1 pr-3">
+                          {row.homeTeamName} v {row.awayTeamName}
+                          {row.homeScore !== null && row.awayScore !== null && (
+                            <span className="ml-2 tabular-nums">
+                              {row.homeScore}–{row.awayScore}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1 pr-3 text-xs">
+                          {row.venueName ? `${row.venueName} · ${row.fieldName}` : 'unplaced'}
+                        </td>
+                        {showOfficials && (
+                          <td className="py-1 text-xs">
+                            {row.officials.length === 0
+                              ? '—'
+                              : row.officials
+                                  .map((official) => `${official.refereeName} (${official.position})`)
+                                  .join(', ')}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           ))}
         </div>

@@ -45,6 +45,11 @@ const CONFLICT_LABELS: Record<string, string> = {
 export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleGrid }) {
   const router = useRouter()
   const [dragging, setDragging] = useState<GridGame | null>(null)
+  // Tap-to-move: the HTML5 drag-and-drop API this component otherwise uses does not
+  // fire on touch at all, so a phone or tablet needs an entirely separate path. Tap a
+  // game to "pick it up", then tap a slot to drop it there — same move() underneath,
+  // same server-side conflict check, just a different gesture to reach it.
+  const [selected, setSelected] = useState<GridGame | null>(null)
   const [hover, setHover] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingMove | null>(null)
   const [reason, setReason] = useState('')
@@ -108,10 +113,41 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
     void move(game, cell.fieldId, cell.startTime, cellLabel)
   }
 
+  function toggleSelect(game: GridGame) {
+    setSelected((current) => (current?.id === game.id ? null : game))
+  }
+
+  function onCellTap(cell: GridCell, cellLabel: string) {
+    if (!selected) return
+    const game = selected
+    setSelected(null)
+    // Tapping the slot a selected game is already in just deselects it.
+    if (cell.games.some((existing) => existing.id === game.id)) return
+    void move(game, cell.fieldId, cell.startTime, cellLabel)
+  }
+
   return (
     <div className="space-y-4">
       {error && <Alert>{error}</Alert>}
       {note && <Alert kind="success">{note}</Alert>}
+
+      {selected && (
+        <Alert kind="info">
+          <span className="flex flex-wrap items-center gap-2">
+            <span>
+              <strong>{selected.homeTeamName} v {selected.awayTeamName}</strong> selected — tap a slot
+              below to move it there.
+            </span>
+            <button
+              type="button"
+              className="font-medium text-turf-600 hover:underline"
+              onClick={() => setSelected(null)}
+            >
+              Cancel
+            </button>
+          </span>
+        </Alert>
+      )}
 
       {pending && (
         <Card className="border-amber-500/60">
@@ -194,7 +230,8 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
         <Card>
           <h3 className="text-base font-semibold">Not yet placed</h3>
           <p className="mt-1 text-sm text-ink-500 dark:text-ink-300">
-            Drag one of these onto a slot to give it a field and a kickoff.
+            Drag one of these onto a slot to give it a field and a kickoff — or on a phone, tap one
+            and then tap the slot.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {grid.unplaced.map((game) => (
@@ -202,8 +239,10 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
                 key={game.id}
                 game={game}
                 dragging={dragging?.id === game.id}
+                selected={selected?.id === game.id}
                 onDragStart={() => setDragging(game)}
                 onDragEnd={() => setDragging(null)}
+                onTap={() => toggleSelect(game)}
               />
             ))}
           </div>
@@ -243,6 +282,7 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
                       {timeRow.cells.map((cell) => {
                         const key = cellKey(cell)
                         const label = `${grid.columns.find((c) => c.id === cell.fieldId)?.fieldName ?? 'field'} at ${timeRow.label}`
+                        const tappable = selected !== null
                         return (
                           <td
                             key={key}
@@ -252,11 +292,24 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
                             }}
                             onDragLeave={() => setHover((current) => (current === key ? null : current))}
                             onDrop={(event) => onDrop(event, cell, label)}
+                            onClick={() => onCellTap(cell, label)}
+                            role={tappable ? 'button' : undefined}
+                            tabIndex={tappable ? 0 : undefined}
+                            onKeyDown={(event) => {
+                              if (tappable && (event.key === 'Enter' || event.key === ' ')) {
+                                event.preventDefault()
+                                onCellTap(cell, label)
+                              }
+                            }}
+                            aria-label={tappable ? `Move to ${label}` : undefined}
                             className={clsx(
                               'align-top rounded-lg border border-dashed p-1 transition',
+                              tappable && 'cursor-pointer',
                               hover === key
                                 ? 'border-turf-500 bg-turf-500/10'
-                                : 'border-ink-200 dark:border-ink-700',
+                                : tappable
+                                  ? 'border-turf-400 dark:border-turf-600'
+                                  : 'border-ink-200 dark:border-ink-700',
                               cell.games.length > 1 && 'border-red-400 bg-red-500/5',
                             )}
                           >
@@ -266,12 +319,14 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
                                   key={game.id}
                                   game={game}
                                   dragging={dragging?.id === game.id}
+                                  selected={selected?.id === game.id}
                                   onDragStart={() => setDragging(game)}
                                   onDragEnd={() => setDragging(null)}
+                                  onTap={() => toggleSelect(game)}
                                 />
                               ))}
                               {cell.games.length > 1 && (
-                                <span className="px-1 text-[11px] font-medium text-red-700 dark:text-red-300">
+                                <span className="px-1 text-xs font-medium text-red-700 dark:text-red-300">
                                   {cell.games.length} games on one field
                                 </span>
                               )}
@@ -299,13 +354,17 @@ export function ScheduleEditor({ orgId, grid }: { orgId: string; grid: ScheduleG
 function GameChip({
   game,
   dragging,
+  selected,
   onDragStart,
   onDragEnd,
+  onTap,
 }: {
   game: GridGame
   dragging: boolean
+  selected: boolean
   onDragStart: () => void
   onDragEnd: () => void
+  onTap: () => void
 }) {
   return (
     <div
@@ -317,12 +376,30 @@ function GameChip({
         onDragStart()
       }}
       onDragEnd={onDragEnd}
+      onClick={(event) => {
+        // Stop this from also reaching the table cell's onClick — a tap here means
+        // "select this game", not "move whatever was selected into this cell".
+        event.stopPropagation()
+        onTap()
+      }}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          event.stopPropagation()
+          onTap()
+        }
+      }}
       aria-grabbed={dragging}
+      aria-pressed={selected}
       className={clsx(
-        'cursor-grab rounded-lg border bg-white px-2 py-1.5 text-xs leading-snug shadow-sm active:cursor-grabbing dark:bg-ink-900',
-        dragging
-          ? 'border-turf-500 opacity-50'
-          : 'border-ink-200 hover:border-turf-500 dark:border-ink-700',
+        'min-h-11 cursor-grab rounded-lg border bg-white px-2 py-2 text-xs leading-snug shadow-sm active:cursor-grabbing dark:bg-ink-900',
+        selected
+          ? 'border-turf-500 ring-2 ring-turf-500/40'
+          : dragging
+            ? 'border-turf-500 opacity-50'
+            : 'border-ink-200 hover:border-turf-500 dark:border-ink-700',
       )}
     >
       <div className="font-medium">
@@ -330,7 +407,7 @@ function GameChip({
         <span className="font-normal text-ink-500 dark:text-ink-400"> v </span>
         {game.awayTeamName}
       </div>
-      <div className="mt-0.5 text-[11px] text-ink-500 dark:text-ink-400">
+      <div className="mt-0.5 text-xs text-ink-500 dark:text-ink-400">
         {game.divisionName}
         {game.officialCount === 0 ? (
           <span className="ml-1 text-amber-700 dark:text-amber-300">· no officials</span>

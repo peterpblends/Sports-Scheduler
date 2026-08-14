@@ -243,6 +243,33 @@ export function ScheduleCalendar({
           else byField.set(key, [row])
         }
 
+        // One section per field (plus "not placed"), each pre-sorted by kickoff. Built
+        // once and rendered twice below — a side-by-side grid from `sm` up, and a
+        // stacked list under it — so a field-by-field view doesn't force horizontal
+        // scrolling on a phone the way an N-column grid of 190px cards would.
+        const sections = [
+          ...shown.map((column) => ({
+            key: column.id,
+            label: column.label,
+            sublabel: column.venueName,
+            amber: false,
+            rows: (byField.get(column.id) ?? []).sort(
+              (a, b) => a.startTime.getTime() - b.startTime.getTime(),
+            ),
+          })),
+          ...(hasUnplaced
+            ? [
+                {
+                  key: 'unplaced',
+                  label: 'Not placed',
+                  sublabel: 'no field yet',
+                  amber: true,
+                  rows: byField.get('unplaced') ?? [],
+                },
+              ]
+            : []),
+        ]
+
         return (
           <Card key={day.date}>
             <h2 className="mb-3 text-base font-semibold">
@@ -252,52 +279,75 @@ export function ScheduleCalendar({
               </span>
             </h2>
 
-            <div className="overflow-x-auto">
+            {/* Below sm: one section per field, stacked top to bottom. */}
+            <div className="flex flex-col gap-4 sm:hidden">
+              {sections.map((section) => (
+                <div key={section.key}>
+                  <div
+                    className={clsx(
+                      'border-b pb-1',
+                      section.amber ? 'border-amber-500/40' : 'border-ink-200 dark:border-ink-700',
+                    )}
+                  >
+                    <div
+                      className={clsx(
+                        'text-sm font-medium',
+                        section.amber && 'text-amber-700 dark:text-amber-300',
+                      )}
+                    >
+                      {section.label}
+                    </div>
+                    <div className="text-xs text-ink-500 dark:text-ink-400">{section.sublabel}</div>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-2">
+                    {section.rows.map((row) => (
+                      <GameBlock key={row.id} row={row} orgSlug={orgSlug} linkGames={linkGames} />
+                    ))}
+                    {section.rows.length === 0 && (
+                      <p className="rounded-lg border border-dashed border-ink-300 px-2 py-3 text-center text-xs text-ink-500 dark:border-ink-600 dark:text-ink-400">
+                        free
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* sm and up: the side-by-side field grid, sideways-scrollable if it's wider
+                than the viewport. */}
+            <div className="hidden overflow-x-auto sm:block">
               <div
                 className="grid gap-3"
-                style={{
-                  gridTemplateColumns: `repeat(${Math.max(1, shown.length + (hasUnplaced ? 1 : 0))}, minmax(190px, 1fr))`,
-                }}
+                style={{ gridTemplateColumns: `repeat(${Math.max(1, sections.length)}, minmax(190px, 1fr))` }}
               >
-                {shown.map((column) => (
-                  <div key={column.id} className="flex flex-col gap-2">
-                    <div className="border-b border-ink-200 pb-1 dark:border-ink-700">
-                      <div className="text-sm font-medium">{column.label}</div>
-                      <div className="text-xs text-ink-500 dark:text-ink-400">
-                        {column.venueName}
+                {sections.map((section) => (
+                  <div key={section.key} className="flex flex-col gap-2">
+                    <div
+                      className={clsx(
+                        'border-b pb-1',
+                        section.amber ? 'border-amber-500/40' : 'border-ink-200 dark:border-ink-700',
+                      )}
+                    >
+                      <div
+                        className={clsx(
+                          'text-sm font-medium',
+                          section.amber && 'text-amber-700 dark:text-amber-300',
+                        )}
+                      >
+                        {section.label}
                       </div>
+                      <div className="text-xs text-ink-500 dark:text-ink-400">{section.sublabel}</div>
                     </div>
-                    {(byField.get(column.id) ?? [])
-                      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
-                      .map((row) => (
-                        <GameBlock
-                          key={row.id}
-                          row={row}
-                          orgSlug={orgSlug}
-                          linkGames={linkGames}
-                        />
-                      ))}
-                    {(byField.get(column.id) ?? []).length === 0 && (
+                    {section.rows.map((row) => (
+                      <GameBlock key={row.id} row={row} orgSlug={orgSlug} linkGames={linkGames} />
+                    ))}
+                    {section.rows.length === 0 && (
                       <p className="rounded-lg border border-dashed border-ink-300 px-2 py-3 text-center text-xs text-ink-500 dark:border-ink-600 dark:text-ink-400">
                         free
                       </p>
                     )}
                   </div>
                 ))}
-
-                {hasUnplaced && (
-                  <div className="flex flex-col gap-2">
-                    <div className="border-b border-amber-500/40 pb-1">
-                      <div className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                        Not placed
-                      </div>
-                      <div className="text-xs text-ink-500 dark:text-ink-400">no field yet</div>
-                    </div>
-                    {(byField.get('unplaced') ?? []).map((row) => (
-                      <GameBlock key={row.id} row={row} orgSlug={orgSlug} linkGames={linkGames} />
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           </Card>
@@ -322,14 +372,14 @@ function GameBlock({
         <span className="text-xs font-medium tabular-nums">
           {formatClockInZone(row.startTime, row.timezone)}
         </span>
-        <span className="text-[11px] text-ink-500 dark:text-ink-400">{row.divisionName}</span>
+        <span className="text-xs text-ink-500 dark:text-ink-400">{row.divisionName}</span>
       </div>
       <div className="mt-1 text-sm leading-snug">
         {row.homeTeamName}
         <span className="text-ink-500 dark:text-ink-400"> v </span>
         {row.awayTeamName}
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-ink-500 dark:text-ink-400">
+      <div className="mt-1 flex items-center justify-between gap-2 text-xs text-ink-500 dark:text-ink-400">
         <span>
           {row.officials.length === 0 ? (
             <span className="text-amber-700 dark:text-amber-300">no officials</span>
@@ -343,7 +393,7 @@ function GameBlock({
   )
 
   const shell =
-    'block rounded-lg border border-ink-200 bg-white p-2 text-left dark:border-ink-700 dark:bg-ink-900'
+    'block rounded-lg border border-ink-200 bg-white p-2.5 text-left dark:border-ink-700 dark:bg-ink-900'
 
   return linkGames ? (
     <Link href={`/app/${orgSlug}/games/${row.id}`} className={clsx(shell, 'hover:border-turf-500')}>
