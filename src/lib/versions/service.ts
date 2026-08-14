@@ -127,6 +127,7 @@ export async function createVersion(
       authorId: input.actor.userId,
       authorLabel: input.actor.email,
       snapshot: snapshot as unknown as Prisma.InputJsonValue,
+      gameCount: snapshot.games.length,
       config: input.config ?? undefined,
       restoredFromId: input.restoredFromId ?? null,
     },

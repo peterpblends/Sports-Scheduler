@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/client'
 import { formatInstantInZone } from '@/lib/time'
 import { Alert, Card, EmptyState, inputClass, secondaryButtonClass } from './ui'
@@ -65,7 +65,18 @@ export function ActivityFeed({ orgId }: { orgId: string }) {
   const [to, setTo] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
 
+  /**
+   * Guards against a second load starting while one is in flight.
+   *
+   * A ref rather than the `loading` state because state updates are not visible to a
+   * handler that has already begun running: two quick clicks on "Load more" both see
+   * `loading === false`, both send the *same* cursor, and the page arrives twice.
+   */
+  const inFlight = useRef(false)
+
   async function load(append = false) {
+    if (inFlight.current) return
+    inFlight.current = true
     setLoading(true)
     setError(null)
     try {
@@ -77,12 +88,16 @@ export function ActivityFeed({ orgId }: { orgId: string }) {
       if (append && cursor) params.set('cursor', cursor)
 
       const data = await api<FeedResponse>(`/api/orgs/${orgId}/activity?${params}`)
-      setEvents(append ? [...events, ...data.events] : data.events)
+      // The updater form, not `[...events, ...]`. Appending from the closure's copy
+      // of `events` drops whatever landed after this call started — so a page could
+      // vanish rather than merely arrive late.
+      setEvents((previous) => (append ? [...previous, ...data.events] : data.events))
       setFacets(data.facets)
       setCursor(data.nextCursor)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load activity.')
     } finally {
+      inFlight.current = false
       setLoading(false)
     }
   }

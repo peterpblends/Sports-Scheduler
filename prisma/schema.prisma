@@ -596,6 +596,21 @@ model GameOfficial {
 
   @@index([gameId, deletedAt])
   @@index([refereeId, deletedAt])
+
+  /// Two PARTIAL UNIQUE indexes also guard this table and are NOT declared here,
+  /// because Prisma's schema language cannot express a predicate:
+  ///
+  ///   GameOfficial_game_position_held_key  (gameId, position)
+  ///   GameOfficial_game_referee_held_key   (gameId, refereeId)
+  ///     ... both WHERE "deletedAt" IS NULL AND status <> 'declined'
+  ///
+  /// They live in migrations/20260814200000_officiating_integrity_constraints. The
+  /// `status <> 'declined'` predicate is load-bearing: a declined assignment frees
+  /// the position, so a plain unique index would forbid "the original official
+  /// declined and somebody else took the game". Without them, the assignment
+  /// endpoint's check-then-insert is a race that can seat two centre officials.
+  /// `prisma migrate dev` will report them as drift. Do not resolve that by
+  /// dropping them.
 }
 
 // ---------------------------------------------------------------------------
@@ -685,7 +700,17 @@ model ScheduleVersion {
   authorLabel String
 
   /// The frozen games. See `ScheduleSnapshot` in src/lib/versions/snapshot.ts.
+  ///
+  /// Large: one row per game in the season. Never `include` this model without a
+  /// `select`, or listing a season's versions transfers and parses every historical
+  /// schedule at once. `gameCount` exists so the common case never has to.
   snapshot Json
+  /// Number of games in `snapshot`, denormalised at write time.
+  ///
+  /// The versions list previously derived this by JSON-parsing every snapshot, which
+  /// made a cheap authenticated GET cost O(versions x games) in both transfer and CPU.
+  /// Safe to denormalise because a snapshot is written once and never updated.
+  gameCount Int @default(0)
   /// The scheduling config used, when this version came from a generation.
   config   Json?
 
@@ -824,4 +849,9 @@ model OfficiatingRequest {
 
   @@index([refereeId, status, deletedAt])
   @@index([gameId, deletedAt])
+
+  /// Also guarded by a partial unique index that Prisma cannot declare:
+  ///   OfficiatingRequest_game_referee_pending_key (gameId, refereeId)
+  ///     WHERE "deletedAt" IS NULL AND status = 'pending'
+  /// See the note on GameOfficial.
 }

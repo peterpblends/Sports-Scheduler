@@ -4,7 +4,7 @@ import type { Metadata } from 'next'
 import { prisma } from '@/lib/prisma'
 import { readSchedule } from '@/lib/schedule/read'
 import { ScheduleList } from '@/components/schedule-views'
-import { Alert, Card, EmptyState } from '@/components/ui'
+import { Card, EmptyState } from '@/components/ui'
 import { formatCalendarDate } from '@/lib/time'
 
 /**

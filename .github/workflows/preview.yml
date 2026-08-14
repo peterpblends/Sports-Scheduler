@@ -7,6 +7,11 @@ name: Preview
 # This is a preview, not a deployment. The URL changes on every run and the run
 # ends when its clock runs out. For a permanent URL see DEPLOYMENT.md.
 
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

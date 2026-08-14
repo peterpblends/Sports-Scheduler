@@ -2,6 +2,11 @@ name: Seed demo data
 
 # Deliberately manual and deliberately not part of Deploy. Seeding is a data
 # write; it should never be a side effect of shipping code.
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

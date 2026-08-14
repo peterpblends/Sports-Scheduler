@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { HttpError, badRequest, clientIp, conflict, forbidden, handler, parseBody } from '@/lib/http'
+import { AUTH_LIMITS, enforceRateLimit } from '@/lib/rate-limit'
 import { acceptInviteSchema } from '@/lib/validation'
 import { hashToken } from '@/lib/tokens'
 import { hashPassword } from '@/lib/password'
@@ -17,6 +18,15 @@ import { recordAudit } from '@/lib/audit'
  *  3. account exists but nobody is signed in -> 409, sign in and retry
  */
 export const POST = handler(async (req) => {
+  // Token-guessing surface. The tokens are 256-bit, so guessing is not the real
+  // risk — unbounded work and unbounded audit noise are.
+  enforceRateLimit({
+    bucket: 'invitation-accept',
+    ip: clientIp(req),
+    ...AUTH_LIMITS.tokenSubmission,
+    message: 'Too many attempts. Try again shortly.',
+  })
+
   const { token, name, password } = await parseBody(req, acceptInviteSchema)
 
   const invitation = await prisma.invitation.findUnique({

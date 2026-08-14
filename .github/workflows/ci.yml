@@ -1,5 +1,10 @@
 name: CI
 
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
 on:
   push:
     branches: ['**']
@@ -43,6 +48,16 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Lint is a real gate now. It used to be a no-op: `next lint` with no config
+      # dropped into an interactive prompt, so nothing was ever checked.
+      - name: Lint
+        run: npm run lint
+
+      # Fails the build on a known-vulnerable dependency rather than waiting for
+      # someone to run this by hand.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
 
       - name: Test
         run: npm test

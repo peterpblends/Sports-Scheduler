@@ -10,6 +10,11 @@ name: Verify preview
 # test suite. The suite calls route handlers as functions, which is the right way
 # to test them but proves nothing about the thing actually serving traffic.
 
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

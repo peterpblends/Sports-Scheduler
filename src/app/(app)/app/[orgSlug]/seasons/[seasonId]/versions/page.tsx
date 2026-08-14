@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
-import { Alert, Card, PageHeader } from '@/components/ui'
+import { Alert, PageHeader } from '@/components/ui'
 import { VersionHistory } from '@/components/versions'
 
 export default async function VersionsPage({

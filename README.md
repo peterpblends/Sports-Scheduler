@@ -121,6 +121,42 @@ upload worked.
 | `npm run seed` | seed demo data |
 | `npm run demo:openings` | free a few officiating slots in the demo data, so the request flow has something to act on |
 
+## Security controls
+
+Authorization is the big one and has its own section below. These are the rest, with
+the reasoning, because a header list without reasoning is how a policy gets copied
+somewhere it breaks something.
+
+| Control | Where | Note |
+| --- | --- | --- |
+| Rate limiting | [`src/lib/rate-limit.ts`](src/lib/rate-limit.ts) | Login, signup, password reset, token submission and invitations. Two axes — per account and per client — because each catches what the other misses. Applied **before** argon2 runs, so the deliberately expensive KDF is not itself a denial-of-service lever. |
+| CSRF | `assertNotCrossSite` in [`src/lib/http.ts`](src/lib/http.ts) | `SameSite=Lax` is the primary control; this is the second layer. Only *contradicted* provenance is rejected, never missing provenance — curl and calendar clients carry no ambient cookies and so cannot be a CSRF vector. |
+| CSP with a nonce | [`src/middleware.ts`](src/middleware.ts) | Per-request nonce rather than `'unsafe-inline'`. A static `script-src 'self'` looks stricter and silently breaks the app: Next streams React's payload in inline `<script>` blocks, so without a nonce nothing hydrates and every client component dies while the server still returns 200. |
+| Other headers | [`next.config.ts`](next.config.ts) | `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy` (reset and invitation tokens ride in query strings — never send them cross-origin), a closed `Permissions-Policy`, and HSTS in production only. `X-Powered-By` removed. |
+| Body size limit | `MAX_BODY_BYTES` in [`src/lib/http.ts`](src/lib/http.ts) | 2 MB, enforced on measured bytes rather than the `Content-Length` a caller claims. Without it `req.json()` buffers whatever it is sent before any schema sees it. |
+| Open-redirect defence | [`src/lib/redirect.ts`](src/lib/redirect.ts) | One definition shared by the server page and the client form. `startsWith('/')` is not enough: `//evil.example` is protocol-relative and every browser resolves it off-origin. |
+| CSV formula neutralisation | `toCsv` in [`src/lib/csv.ts`](src/lib/csv.ts) | Team and person names reach exports and are user-controlled. A cell beginning `=`, `+`, `-` or `@` executes in Excel, Sheets and LibreOffice, so every cell is guarded at the point of rendering. |
+| Client-address trust | `clientIp` in [`src/lib/http.ts`](src/lib/http.ts) | `X-Forwarded-For` is read from the **right**, the end your own proxy wrote, `TRUSTED_PROXY_HOPS` places from the end. The leftmost entry is attacker-chosen; believing it lets anyone write arbitrary values into audit rows and vary a header to defeat per-IP limits. |
+| Mail transport | [`src/lib/mailer.ts`](src/lib/mailer.ts) | The development transport never prints reset or invitation links in production — each is a single-use credential — writes `.mail/` at `0700`/`0600`, and warns loudly that mail is not reaching anyone. |
+| Race safety | `20260814210000` / `20260814200000` migrations | Partial unique indexes on the officiating tables. The application could only narrow these races, not close them: a read-then-insert lets two concurrent requests both seat a centre official. A `P2002` is translated to a 409 in `handler` so the loser gets a real answer. |
+
+Passwords are argon2id at OWASP's suggested interactive parameters, capped at 200
+characters so the KDF cannot be fed a megabyte. Session tokens are 256 random bits
+stored as SHA-256 digests. Prisma is never configured to log queries, so parameters —
+which include password hashes — stay out of logs.
+
+Two deliberate, documented trade-offs rather than oversights:
+
+- **Signup says when an address is already registered.** That is account enumeration,
+  and the alternative — accepting the signup and sending an email instead — makes the
+  flow unusable for the sort of organization this is for. Bulk enumeration is capped
+  by the signup rate limit; login and password reset are both non-enumerable.
+- **Rate limiting is in-process.** With more than one server process each keeps its own
+  counters, so the effective limit multiplies by the process count. It is still the
+  difference between thousands of guesses a minute and a handful, and
+  `createRateLimiter` takes its own store so Redis or a Postgres table can be
+  substituted without touching a call site.
+
 ## Authorization model
 
 **Organizations** are the tenant. A user belongs to one or more via a

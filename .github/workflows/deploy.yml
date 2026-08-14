@@ -2,6 +2,11 @@ name: Deploy
 
 # Runs on GitHub's runners rather than a dev sandbox, which is the point: it has
 # unrestricted outbound access to Vercel and to the hosted database.
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main, claude/sport-league-scheduler-3dl6y2]

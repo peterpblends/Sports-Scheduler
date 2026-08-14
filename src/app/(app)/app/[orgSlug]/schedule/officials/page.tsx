@@ -1,5 +1,4 @@
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'

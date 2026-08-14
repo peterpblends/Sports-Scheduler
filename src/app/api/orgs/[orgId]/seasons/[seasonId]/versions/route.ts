@@ -3,7 +3,6 @@ import { prisma } from '@/lib/prisma'
 import { handler, parseBody, requirePermission } from '@/lib/http'
 import { assertSeasonInOrg } from '@/lib/scope'
 import { createVersion } from '@/lib/versions/service'
-import { parseSnapshot } from '@/lib/versions/snapshot'
 
 type Ctx = { params: Promise<{ orgId: string; seasonId: string }> }
 
@@ -17,7 +16,27 @@ export const GET = handler<Ctx>(async (req, ctx) => {
     prisma.scheduleVersion.findMany({
       where: { seasonId },
       orderBy: { number: 'desc' },
-      include: { author: { select: { name: true, email: true } } },
+      // An explicit select, and `snapshot` is deliberately not in it. `include`
+      // without a select pulls every column, and `snapshot` holds one entry per game
+      // in the season — listing a few dozen versions of a large season would transfer
+      // and parse the entire schedule history to render a list of labels.
+      select: {
+        id: true,
+        number: true,
+        label: true,
+        note: true,
+        status: true,
+        source: true,
+        authorLabel: true,
+        createdAt: true,
+        publishedAt: true,
+        restoredFromId: true,
+        gameCount: true,
+        author: { select: { name: true, email: true } },
+      },
+      // Bounded. Versions accumulate for the life of a season and a list of every one
+      // ever made is not something any caller needs in a single response.
+      take: 200,
     }),
     prisma.season.findUniqueOrThrow({
       where: { id: seasonId },
@@ -39,7 +58,7 @@ export const GET = handler<Ctx>(async (req, ctx) => {
       createdAt: version.createdAt,
       publishedAt: version.publishedAt,
       restoredFromId: version.restoredFromId,
-      gameCount: parseSnapshot(version.snapshot).games.length,
+      gameCount: version.gameCount,
       isPublished: version.id === season.publishedVersionId,
     })),
   })

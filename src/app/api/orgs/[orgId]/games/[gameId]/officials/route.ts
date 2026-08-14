@@ -46,13 +46,25 @@ export const POST = handler<Ctx>(async (req, ctx) => {
   const data = await parseBody(req, createGameOfficialSchema)
   await assertRefereeInOrg(orgId, data.refereeId)
 
+  // A declined assignment does not hold its position — that is what declining means,
+  // and it is how `openPositionsFor` and the database's partial unique indexes both
+  // define an open slot.
+  //
+  // This check previously counted any non-deleted row, including declined ones, which
+  // put it at odds with the rest of the application: the assignment board lists a
+  // game with a decline on it as needing an official, and this endpoint then refused
+  // to supply one. An assigner following the board's own advice hit
+  // "That game already has a center" and had no way forward. The request-approval
+  // path, which used the shared rule, would happily fill the same slot.
+  const held = { deletedAt: null, status: { not: 'declined' } } as const
+
   const existingPosition = await prisma.gameOfficial.findFirst({
-    where: { gameId, position: data.position, deletedAt: null },
+    where: { gameId, position: data.position, ...held },
   })
   if (existingPosition) throw conflict(`That game already has a ${data.position}.`)
 
   const alreadyOnGame = await prisma.gameOfficial.findFirst({
-    where: { gameId, refereeId: data.refereeId, deletedAt: null },
+    where: { gameId, refereeId: data.refereeId, ...held },
   })
   if (alreadyOnGame) throw conflict('That official is already assigned to this game.')
 

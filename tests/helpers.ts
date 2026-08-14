@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { SESSION_COOKIE } from '@/lib/session'
 import { setMailer, type Mail, type Mailer } from '@/lib/mailer'
+import { rateLimitStore } from '@/lib/rate-limit'
 
 const BASE = 'http://localhost:3000'
 
@@ -107,8 +108,16 @@ export function useCapturingMailer(): CapturingMailer {
 // Database
 // ---------------------------------------------------------------------------
 
-/** Wipes every table. Audit rows are append-only in the app, not in test setup. */
+/**
+ * Wipes every table. Audit rows are append-only in the app, not in test setup.
+ *
+ * Also clears the rate-limit counters. They live in process memory and are keyed on
+ * email and IP, both of which repeat across tests — without this, the twentieth
+ * `signUp('owner@example.com')` in a file starts getting 429s and the failure looks
+ * like a bug in whatever that test was actually about.
+ */
 export async function resetDatabase(): Promise<void> {
+  rateLimitStore.reset()
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE "AuditEvent", "Invitation", "PasswordResetToken", "Session",
                    "ScheduleVersion", "CalendarFeed", "NotificationPreference",
