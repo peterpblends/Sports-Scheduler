@@ -1,0 +1,53 @@
+[Unit]
+Description=Sports Scheduler (Next.js)
+Documentation=https://github.com/peterpblends/Sports-Scheduler
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=sports
+Group=sports
+WorkingDirectory=/opt/sports-scheduler
+
+# Secrets live in a root-owned 0640 file, not in this unit and not in the repository.
+# `systemctl cat` and `ps` both show a unit file to any user; an EnvironmentFile does
+# not leak the same way.
+EnvironmentFile=/etc/sports-scheduler.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start --port 3000
+
+# Restart on failure, but stop flapping forever: five failures in a minute and it
+# stays down so the problem is visible instead of hidden behind an endless loop.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Hardening. The app needs to read its own directory, talk to Postgres over a local
+# socket or TCP, and write nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# `.next` is written at build time by deploy.sh, not at runtime — but Next writes a
+# small amount of cache under it while serving, so it stays writable.
+ReadWritePaths=/opt/sports-scheduler/.next
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sports-scheduler
+
+[Install]
+WantedBy=multi-user.target
