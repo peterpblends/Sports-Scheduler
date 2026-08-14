@@ -17,7 +17,8 @@ export const ROLE_DESCRIPTIONS: Record<Role, string> = {
   admin: 'Full schedule and roster control.',
   scheduler: 'Generate and edit schedules. Cannot change members or roles.',
   coach: 'Read-only, plus reschedule requests and roster edits for their own team.',
-  referee: 'Sees only their own assignments; sets availability and accepts or declines.',
+  referee:
+    'Sees only their own assignments; sets availability, accepts or declines, and can ask for games that are short an official.',
   viewer: 'Read-only.',
 }
 
@@ -62,6 +63,10 @@ export type Permission =
   | 'official:availability:write'
   | 'official:availability:write:own'
   | 'official:respond:own'
+  /** Ask to officiate a game that is short an official. Referee only. */
+  | 'official:request:own'
+  /** Approve or reject those requests. Never held by the referee making them. */
+  | 'official:request:review'
   // history
   | 'audit:read'
 
@@ -89,6 +94,7 @@ const ADMIN: Permission[] = [
   'official:read',
   'official:assign',
   'official:availability:write',
+  'official:request:review',
   'audit:read',
 ]
 
@@ -107,6 +113,7 @@ const SCHEDULER: Permission[] = [
   'schedule:restore',
   'official:read',
   'official:assign',
+  'official:request:review',
   'audit:read',
 ]
 
@@ -127,6 +134,9 @@ const REFEREE: Permission[] = [
   'official:read:own',
   'official:availability:write:own',
   'official:respond:own',
+  // Ask, but never decide. `official:request:review` is deliberately absent, so a
+  // referee cannot approve their own request even though they can create it.
+  'official:request:own',
 ]
 
 const VIEWER: Permission[] = [

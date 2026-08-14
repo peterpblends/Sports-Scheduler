@@ -232,37 +232,67 @@ async function blackoutConflicts(
 // ---------------------------------------------------------------------------
 
 /**
- * Whether this referee may take this game. Covers the four official-side hard
- * rules: they must be available, under their daily cap, free of an overlapping
- * assignment, and not connected to either team.
+ * Everything about a referee that bears on whether they may take a game.
+ *
+ * Loaded once and reused, which is what lets the same rules be evaluated for one
+ * game or for a whole season's worth without re-querying per game.
  */
-export async function detectOfficialConflicts(
-  orgId: string,
-  gameId: string,
-  refereeId: string,
-): Promise<Conflict[]> {
+export type RefereeConflictContext = {
+  id: string
+  personId: string
+  name: string
+  maxGamesPerDay: number
+  travelBufferMinutes: number
+  availability: Array<{
+    id: string
+    kind: 'weekly' | 'blackout'
+    dayOfWeek: number | null
+    startMinute: number | null
+    endMinute: number | null
+    effectiveFrom: Date | null
+    effectiveTo: Date | null
+    reason: string | null
+  }>
+  /** Non-declined assignments, which are the ones that occupy their time. */
+  assignments: Array<{
+    gameId: string
+    startTime: Date
+    durationMinutes: number
+    venueId: string | null
+    timezone: string | null
+  }>
+  /** People the referee is related to, so a relative on a team is caught. */
+  relatedPersonIds: Set<string>
+}
+
+/** The game being evaluated, flattened so the rules need no Prisma types. */
+export type ConflictGame = {
+  id: string
+  startTime: Date
+  durationMinutes: number
+  venueId: string | null
+  timezone: string
+  /** Person ids on either team. The conflict-of-interest test is a set overlap. */
+  teamPersonIds: Set<string>
+}
+
+/**
+ * The official-side hard rules, as a pure function.
+ *
+ * Pure on purpose. `detectOfficialConflicts` below is the authoritative gate at
+ * write time and calls straight through to this; the referee's own board evaluates
+ * a whole season of candidate games by loading context once and calling this in a
+ * loop. Two code paths, one definition of the rules — which is the only way to
+ * keep a list of "games you may request" from disagreeing with the endpoint that
+ * decides whether you may actually have one.
+ */
+export function officialConflicts(
+  referee: RefereeConflictContext,
+  game: ConflictGame,
+): Conflict[] {
   const conflicts: Conflict[] = []
 
-  const game = await prisma.game.findFirst({
-    where: { id: gameId, deletedAt: null },
-    include: { field: { include: { venue: true } } },
-  })
-  if (!game) return conflicts
-
-  const referee = await prisma.referee.findFirst({
-    where: { id: refereeId, deletedAt: null },
-    include: {
-      person: true,
-      availability: { where: { deletedAt: null } },
-      assignments: {
-        where: { deletedAt: null, status: { not: 'declined' }, game: { deletedAt: null } },
-        include: { game: { include: { field: { include: { venue: true } } } } },
-      },
-    },
-  })
-  if (!referee) return conflicts
-
-  const tz = game.field?.venue.timezone ?? 'UTC'
+  const tz = game.timezone
   const start = game.startTime
   const end = new Date(start.getTime() + game.durationMinutes * 60_000)
   const localDate = calendarDateInZone(start, tz)
@@ -271,29 +301,19 @@ export async function detectOfficialConflicts(
   const endMinutes = startMinutes + game.durationMinutes
 
   // --- conflict of interest: on either team, or related to someone who is
-  const teamPeople = await prisma.teamMembership.findMany({
-    where: { deletedAt: null, teamId: { in: [game.homeTeamId, game.awayTeamId] } },
-    select: { personId: true, teamId: true },
-  })
-  const teamPersonIds = new Set(teamPeople.map((m) => m.personId))
-
-  if (teamPersonIds.has(referee.personId)) {
+  if (game.teamPersonIds.has(referee.personId)) {
     conflicts.push({
       kind: 'referee_conflict_of_interest',
-      message: `${referee.person.name} is a member of one of these teams.`,
-      refs: { refereeId, gameId },
+      message: `${referee.name} is a member of one of these teams.`,
+      refs: { refereeId: referee.id, gameId: game.id },
     })
   } else {
-    const relations = await prisma.personRelationship.findMany({
-      where: { deletedAt: null, personId: referee.personId },
-      select: { relatedPersonId: true },
-    })
-    const related = relations.find((r) => teamPersonIds.has(r.relatedPersonId))
+    const related = [...referee.relatedPersonIds].find((id) => game.teamPersonIds.has(id))
     if (related) {
       conflicts.push({
         kind: 'referee_conflict_of_interest',
-        message: `${referee.person.name} is related to someone on one of these teams.`,
-        refs: { refereeId, gameId, relatedPersonId: related.relatedPersonId },
+        message: `${referee.name} is related to someone on one of these teams.`,
+        refs: { refereeId: referee.id, gameId: game.id, relatedPersonId: related },
       })
     }
   }
@@ -310,8 +330,8 @@ export async function detectOfficialConflicts(
   if (blackout) {
     conflicts.push({
       kind: 'referee_unavailable',
-      message: `${referee.person.name} has a blackout on that date${blackout.reason ? ` (${blackout.reason})` : ''}.`,
-      refs: { refereeId, availabilityId: blackout.id },
+      message: `${referee.name} has a blackout on that date${blackout.reason ? ` (${blackout.reason})` : ''}.`,
+      refs: { refereeId: referee.id, availabilityId: blackout.id },
     })
   } else {
     const weekly = referee.availability.filter((a) => a.kind === 'weekly')
@@ -330,8 +350,8 @@ export async function detectOfficialConflicts(
       if (!covered) {
         conflicts.push({
           kind: 'referee_unavailable',
-          message: `${referee.person.name} is not available at that local time.`,
-          refs: { refereeId },
+          message: `${referee.name} is not available at that local time.`,
+          refs: { refereeId: referee.id },
         })
       }
     }
@@ -339,22 +359,21 @@ export async function detectOfficialConflicts(
 
   // --- overlapping assignment, or too little travel time between venues
   for (const assignment of referee.assignments) {
-    if (assignment.gameId === gameId) continue
-    const other = assignment.game
-    const otherStart = other.startTime
-    const otherEnd = new Date(other.startTime.getTime() + other.durationMinutes * 60_000)
+    if (assignment.gameId === game.id) continue
+    const otherStart = assignment.startTime
+    const otherEnd = new Date(assignment.startTime.getTime() + assignment.durationMinutes * 60_000)
 
     if (overlaps(start, end, otherStart, otherEnd)) {
       conflicts.push({
         kind: 'referee_unavailable',
-        message: `${referee.person.name} already has an overlapping assignment.`,
-        refs: { refereeId, gameId: other.id },
+        message: `${referee.name} already has an overlapping assignment.`,
+        refs: { refereeId: referee.id, gameId: assignment.gameId },
       })
       continue
     }
 
     const differentVenue =
-      other.field && game.field && other.field.venueId !== game.field.venueId
+      assignment.venueId !== null && game.venueId !== null && assignment.venueId !== game.venueId
     if (differentVenue) {
       const gapMinutes =
         otherStart.getTime() >= end.getTime()
@@ -363,8 +382,8 @@ export async function detectOfficialConflicts(
       if (gapMinutes < referee.travelBufferMinutes) {
         conflicts.push({
           kind: 'referee_unavailable',
-          message: `${referee.person.name} needs ${referee.travelBufferMinutes} minutes to travel between venues; only ${Math.round(gapMinutes)} available.`,
-          refs: { refereeId, gameId: other.id },
+          message: `${referee.name} needs ${referee.travelBufferMinutes} minutes to travel between venues; only ${Math.round(gapMinutes)} available.`,
+          refs: { refereeId: referee.id, gameId: assignment.gameId },
         })
       }
     }
@@ -372,17 +391,135 @@ export async function detectOfficialConflicts(
 
   // --- daily cap, counted in the local day of each game's own venue
   const sameDay = referee.assignments.filter((assignment) => {
-    if (assignment.gameId === gameId) return false
-    const otherTz = assignment.game.field?.venue.timezone ?? tz
-    return calendarDateInZone(assignment.game.startTime, otherTz).getTime() === localDate.getTime()
+    if (assignment.gameId === game.id) return false
+    const otherTz = assignment.timezone ?? tz
+    return calendarDateInZone(assignment.startTime, otherTz).getTime() === localDate.getTime()
   })
   if (sameDay.length + 1 > referee.maxGamesPerDay) {
     conflicts.push({
       kind: 'referee_daily_cap',
-      message: `${referee.person.name} is capped at ${referee.maxGamesPerDay} games per day and already has ${sameDay.length}.`,
-      refs: { refereeId },
+      message: `${referee.name} is capped at ${referee.maxGamesPerDay} games per day and already has ${sameDay.length}.`,
+      refs: { refereeId: referee.id },
     })
   }
 
   return conflicts
+}
+
+/** Loads a referee's rule context. One query set, reusable across many games. */
+export async function loadRefereeConflictContext(
+  refereeId: string,
+): Promise<RefereeConflictContext | null> {
+  const referee = await prisma.referee.findFirst({
+    where: { id: refereeId, deletedAt: null },
+    include: {
+      person: true,
+      availability: { where: { deletedAt: null } },
+      assignments: {
+        where: { deletedAt: null, status: { not: 'declined' }, game: { deletedAt: null } },
+        include: { game: { include: { field: { include: { venue: true } } } } },
+      },
+    },
+  })
+  if (!referee) return null
+
+  const relations = await prisma.personRelationship.findMany({
+    where: { deletedAt: null, personId: referee.personId },
+    select: { relatedPersonId: true },
+  })
+
+  return {
+    id: referee.id,
+    personId: referee.personId,
+    name: referee.person.name,
+    maxGamesPerDay: referee.maxGamesPerDay,
+    travelBufferMinutes: referee.travelBufferMinutes,
+    availability: referee.availability.map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      dayOfWeek: a.dayOfWeek,
+      startMinute: a.startMinute,
+      endMinute: a.endMinute,
+      effectiveFrom: a.effectiveFrom,
+      effectiveTo: a.effectiveTo,
+      reason: a.reason,
+    })),
+    assignments: referee.assignments.map((assignment) => ({
+      gameId: assignment.gameId,
+      startTime: assignment.game.startTime,
+      durationMinutes: assignment.game.durationMinutes,
+      venueId: assignment.game.field?.venueId ?? null,
+      timezone: assignment.game.field?.venue.timezone ?? null,
+    })),
+    relatedPersonIds: new Set(relations.map((r) => r.relatedPersonId)),
+  }
+}
+
+/** The person ids on either team of a game — the conflict-of-interest input. */
+export async function teamPersonIdsForGames(
+  gameIds: string[],
+): Promise<Map<string, Set<string>>> {
+  if (gameIds.length === 0) return new Map()
+
+  const games = await prisma.game.findMany({
+    where: { id: { in: gameIds } },
+    select: { id: true, homeTeamId: true, awayTeamId: true },
+  })
+  const teamIds = [...new Set(games.flatMap((g) => [g.homeTeamId, g.awayTeamId]))]
+
+  const memberships = await prisma.teamMembership.findMany({
+    where: { deletedAt: null, teamId: { in: teamIds } },
+    select: { personId: true, teamId: true },
+  })
+  const byTeam = new Map<string, Set<string>>()
+  for (const membership of memberships) {
+    const bucket = byTeam.get(membership.teamId)
+    if (bucket) bucket.add(membership.personId)
+    else byTeam.set(membership.teamId, new Set([membership.personId]))
+  }
+
+  return new Map(
+    games.map((game) => [
+      game.id,
+      new Set([
+        ...(byTeam.get(game.homeTeamId) ?? []),
+        ...(byTeam.get(game.awayTeamId) ?? []),
+      ]),
+    ]),
+  )
+}
+
+/**
+ * Whether this referee may take this game. Covers the four official-side hard
+ * rules: they must be available, under their daily cap, free of an overlapping
+ * assignment, and not connected to either team.
+ *
+ * The authoritative check at write time. A thin wrapper over `officialConflicts`
+ * so that it and the batch path cannot disagree.
+ */
+export async function detectOfficialConflicts(
+  orgId: string,
+  gameId: string,
+  refereeId: string,
+): Promise<Conflict[]> {
+  const game = await prisma.game.findFirst({
+    where: { id: gameId, deletedAt: null },
+    include: { field: { include: { venue: true } } },
+  })
+  if (!game) return []
+
+  const [referee, teamPeople] = await Promise.all([
+    loadRefereeConflictContext(refereeId),
+    teamPersonIdsForGames([gameId]),
+  ])
+  if (!referee) return []
+
+  return officialConflicts(referee, {
+    id: game.id,
+    startTime: game.startTime,
+    durationMinutes: game.durationMinutes,
+    venueId: game.field?.venueId ?? null,
+    timezone: game.field?.venue.timezone ?? 'UTC',
+    teamPersonIds: teamPeople.get(gameId) ?? new Set(),
+  })
 }

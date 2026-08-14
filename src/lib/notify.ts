@@ -2,6 +2,7 @@ import { prisma } from './prisma'
 import { appUrl, mailer } from './mailer'
 import { recordAudit, recordAuditMany, type AuditInput } from './audit'
 import { formatInstantInZone } from './time'
+import { can } from './authz'
 
 /**
  * Transactional notifications.
@@ -27,6 +28,7 @@ export type NotificationKind =
   | 'gameRescheduled'
   | 'assignmentChanged'
   | 'rosterChanged'
+  | 'officiatingRequest'
 
 /** Matches the column defaults on NotificationPreference. */
 export const NOTIFICATION_DEFAULTS: Record<NotificationKind, boolean> = {
@@ -34,6 +36,7 @@ export const NOTIFICATION_DEFAULTS: Record<NotificationKind, boolean> = {
   gameRescheduled: true,
   assignmentChanged: true,
   rosterChanged: false,
+  officiatingRequest: true,
 }
 
 export const NOTIFICATION_LABELS: Record<NotificationKind, { title: string; detail: string }> = {
@@ -52,6 +55,11 @@ export const NOTIFICATION_LABELS: Record<NotificationKind, { title: string; deta
   rosterChanged: {
     title: 'A roster I manage changes',
     detail: 'When somebody joins or leaves a team you are staff of. Off by default.',
+  },
+  officiatingRequest: {
+    title: 'An officiating request needs an answer, or mine is answered',
+    detail:
+      'Assigners hear when a referee asks for a game; referees hear when their request is approved or turned down.',
   },
 }
 
@@ -183,6 +191,29 @@ export async function orgRecipients(orgId: string): Promise<Recipient[]> {
       email: membership.user.email,
       name: membership.user.name,
     })),
+  )
+}
+
+/**
+ * Members who can act on an officiating request.
+ *
+ * Derived from the permission matrix rather than a hard-coded role list, so adding
+ * `official:request:review` to a role automatically starts telling them. That is
+ * the same single-source-of-truth rule the endpoints follow.
+ */
+export async function requestReviewerRecipients(orgId: string): Promise<Recipient[]> {
+  const memberships = await prisma.membership.findMany({
+    where: { orgId, deletedAt: null, user: { deletedAt: null } },
+    include: { user: { select: { id: true, email: true, name: true } } },
+  })
+  return dedupe(
+    memberships
+      .filter((membership) => can(membership.role, 'official:request:review'))
+      .map((membership) => ({
+        userId: membership.user.id,
+        email: membership.user.email,
+        name: membership.user.name,
+      })),
   )
 }
 
@@ -429,6 +460,158 @@ export async function notifyAssignmentChanged(input: {
             `You have been taken off ${match} (${when}). Nothing further is needed from you.`,
             '',
             `Details: ${link}`,
+          ].join('\n'),
+  })
+}
+
+/**
+ * A referee has asked for a game. Tells whoever can answer.
+ *
+ * The requester is excluded even if they somehow hold the reviewing permission —
+ * the same rule as everywhere else here: nobody is emailed about their own action.
+ */
+export async function notifyOfficiatingRequested(input: {
+  orgId: string
+  gameId: string
+  requestId: string
+  refereeName: string
+  position: string
+  note?: string | null
+  actorUserId: string
+  actorLabel: string
+}): Promise<NotifyResult> {
+  const [org, game] = await Promise.all([
+    prisma.organization.findUniqueOrThrow({
+      where: { id: input.orgId },
+      select: { name: true, slug: true },
+    }),
+    prisma.game.findFirstOrThrow({
+      where: { id: input.gameId },
+      include: {
+        homeTeam: true,
+        awayTeam: true,
+        field: { include: { venue: { select: { name: true, timezone: true } } } },
+      },
+    }),
+  ])
+
+  const match = `${game.homeTeam.name} v ${game.awayTeam.name}`
+  const timezone = game.field?.venue.timezone ?? 'UTC'
+  const when = formatInstantInZone(game.startTime, timezone)
+  const where = game.field ? `${game.field.venue.name} — ${game.field.name}` : 'venue to be confirmed'
+  const link = appUrl(`/app/${org.slug}/schedule/officials`)
+
+  const reviewers = (await requestReviewerRecipients(input.orgId)).filter(
+    (recipient) => recipient.userId !== input.actorUserId,
+  )
+
+  if (reviewers.length === 0) {
+    await recordNoRecipients({
+      orgId: input.orgId,
+      kind: 'officiatingRequest',
+      entityType: 'OfficiatingRequest',
+      entityId: input.requestId,
+      actorLabel: input.actorLabel,
+    })
+    return { sent: 0, suppressed: 0, failed: 0 }
+  }
+
+  return notify({
+    orgId: input.orgId,
+    kind: 'officiatingRequest',
+    recipients: reviewers,
+    entityType: 'OfficiatingRequest',
+    entityId: input.requestId,
+    actorLabel: input.actorLabel,
+    meta: { gameId: input.gameId, requestId: input.requestId, position: input.position },
+    subject: `${org.name}: ${input.refereeName} asked to officiate ${match}`,
+    body: (recipient) =>
+      [
+        `Hello ${recipient.name},`,
+        '',
+        `${input.refereeName} has asked to take ${input.position} for ${match}.`,
+        '',
+        `When: ${when}`,
+        `Where: ${where}`,
+        ...(input.note ? ['', `They said: ${input.note}`] : []),
+        '',
+        `Approve or turn it down: ${link}`,
+        '',
+        settingsFooter(org.slug),
+      ].join('\n'),
+  })
+}
+
+/** An assigner has answered a request. Tells the referee who asked. */
+export async function notifyOfficiatingDecided(input: {
+  orgId: string
+  gameId: string
+  requestId: string
+  refereeId: string
+  decision: 'approved' | 'rejected'
+  position: string
+  decisionNote?: string | null
+  actorLabel: string
+}): Promise<NotifyResult> {
+  const [org, game] = await Promise.all([
+    prisma.organization.findUniqueOrThrow({
+      where: { id: input.orgId },
+      select: { name: true, slug: true },
+    }),
+    prisma.game.findFirstOrThrow({
+      where: { id: input.gameId },
+      include: {
+        homeTeam: true,
+        awayTeam: true,
+        field: { include: { venue: { select: { name: true, timezone: true } } } },
+      },
+    }),
+  ])
+
+  const match = `${game.homeTeam.name} v ${game.awayTeam.name}`
+  const timezone = game.field?.venue.timezone ?? 'UTC'
+  const when = formatInstantInZone(game.startTime, timezone)
+  const where = game.field ? `${game.field.venue.name} — ${game.field.name}` : 'venue to be confirmed'
+  const link = appUrl(`/app/${org.slug}/officiating`)
+
+  return notify({
+    orgId: input.orgId,
+    kind: 'officiatingRequest',
+    recipients: await refereeRecipient(input.refereeId),
+    entityType: 'OfficiatingRequest',
+    entityId: input.requestId,
+    actorLabel: input.actorLabel,
+    meta: { gameId: input.gameId, requestId: input.requestId, decision: input.decision },
+    subject:
+      input.decision === 'approved'
+        ? `${org.name}: you have ${match}`
+        : `${org.name}: ${match} went to someone else`,
+    body: (recipient) =>
+      input.decision === 'approved'
+        ? [
+            `Hello ${recipient.name},`,
+            '',
+            `Your request to officiate ${match} was approved. You are down as ${input.position}.`,
+            '',
+            `When: ${when}`,
+            `Where: ${where}`,
+            ...(input.decisionNote ? ['', input.decisionNote] : []),
+            '',
+            // An approved request already puts them on the crew, so there is
+            // nothing further to accept — saying so avoids a pointless trip.
+            `Nothing else is needed from you. Your assignments: ${link}`,
+            '',
+            settingsFooter(org.slug),
+          ].join('\n')
+        : [
+            `Hello ${recipient.name},`,
+            '',
+            `Your request to officiate ${match} (${when}) was not taken up.`,
+            ...(input.decisionNote ? ['', `Reason given: ${input.decisionNote}`] : []),
+            '',
+            `Other games needing an official: ${link}`,
+            '',
+            settingsFooter(org.slug),
           ].join('\n'),
   })
 }

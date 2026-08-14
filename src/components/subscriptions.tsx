@@ -181,8 +181,7 @@ export function CalendarFeeds({
   )
 }
 
-const KINDS = ['schedulePublished', 'gameRescheduled', 'assignmentChanged', 'rosterChanged'] as const
-type Kind = (typeof KINDS)[number]
+type Kind = string
 
 export function NotificationPreferences({
   orgId,
@@ -193,6 +192,9 @@ export function NotificationPreferences({
   initial: Record<Kind, boolean>
   labels: Record<Kind, { title: string; detail: string }>
 }) {
+  // Rendered from the labels the server sent rather than a list repeated here, so a
+  // new notification kind shows up without a second edit in this file.
+  const KINDS = Object.keys(labels)
   const [prefs, setPrefs] = useState(initial)
   const [note, setNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

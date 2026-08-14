@@ -9,6 +9,7 @@
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
+    "demo:openings": "tsx prisma/demo-openings.ts",
     "dev": "next dev",
     "lint": "next lint",
     "postinstall": "prisma generate",

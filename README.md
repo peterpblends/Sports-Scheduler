@@ -51,15 +51,31 @@ so the full flows are exercisable locally.
 
 ### Demo accounts
 
-`npm run seed` creates **Riverside Youth Soccer**: 2 leagues, an active Spring 2026
-season with a 9-team U12 Boys division (odd on purpose, so bye handling gets
-exercised) and an 8-team U10 Girls division, 229 people on full rosters, 6 officials
-with weekly availability and blackouts, 2 venues over 3 fields with Saturday
-8am–6pm local slots across Mar 7 – May 30 2026, holiday and maintenance blackouts,
-a sibling pair split across two teams, and one user per role.
+`npm run seed` creates **Riverside Youth Soccer**: 2 leagues, an active season with a
+9-team U12 Boys division (odd on purpose, so bye handling gets exercised) and an
+8-team U10 Girls division, 233 people on full rosters, 10 officials with weekly
+availability and blackouts, 2 venues over 3 fields with Saturday 8am–6pm and Sunday
+1–5pm local slots, holiday and maintenance blackouts, a sibling pair split across two
+teams, and one user per role.
 
 That is deliberately the shape acceptance scenario 2 asks for, so the phase 3
 generator can run against it with no extra setup.
+
+**The season is anchored to the current week**, spanning roughly five weeks back to
+nine weeks ahead, so a freshly seeded org always has games behind it and fixtures in
+front of it. Fixed dates rot: a season that finished months ago leaves every "next
+game" panel empty, which makes a working app look broken. The seed prints the window
+it chose. This does not weaken idempotent generation — the engine still returns the
+same schedule for the same config and seed; it is the config that follows the
+calendar.
+
+`npm run demo:openings` frees a few officiating positions afterwards. It exists
+because the generator fills every available official to their daily cap, so
+immediately after generating there is nothing anybody can volunteer for — measured
+against the seeded org, *every* unstaffed game was blocked for the demo referee by
+their cap or their availability. Somebody declining is the situation the request flow
+is actually for, so the script arranges a handful of declines on days the demo referee
+still has room.
 
 Password for all logins is `demo-password-123`:
 
@@ -103,6 +119,7 @@ upload worked.
 | `npm run db:deploy` | apply migrations (production) |
 | `npm run db:reset` | drop, re-migrate and re-seed |
 | `npm run seed` | seed demo data |
+| `npm run demo:openings` | free a few officiating slots in the demo data, so the request flow has something to act on |
 
 ## Authorization model
 
@@ -115,7 +132,7 @@ upload worked.
 | `admin` | full schedule and roster control |
 | `scheduler` | generate and edit schedules; **cannot** change members or roles |
 | `coach` | read published schedules, request reschedules and edit their own team's roster |
-| `referee` | see only their own assignments, set availability, accept/decline |
+| `referee` | see only their own assignments, set availability, accept/decline, and ask for games short an official |
 | `viewer` | read published schedules |
 
 Roles map to named permissions in [`src/lib/authz.ts`](src/lib/authz.ts) — the
@@ -158,6 +175,7 @@ Some permissions end in `:own` and need a second, row-level check:
 | `roster:write:own` | coach | `requireTeamRosterWrite` — team must be one they are staff of |
 | `official:availability:write:own` | referee | `requireAvailabilityWrite` — their own referee record |
 | `official:respond:own` | referee | `requireAssignmentRespond` — their own assignment |
+| `official:request:own` | referee | `requireOwnRefereeRequest` — the referee is taken from the session, and the create schema has no `refereeId` field at all |
 
 "Their own" resolves through `Person.userId`: a login is tied to one Person record,
 and that Person's staff `TeamMembership` rows are their teams. A user with no linked
@@ -395,7 +413,7 @@ Getting this right up front was deliberate; it is painful to retrofit.
 npm test
 ```
 
-323 tests across twelve files. The engine, diff, CSV and iCal tests run purely off
+353 tests across thirteen files. The engine, diff, CSV and iCal tests run purely off
 fixtures; the rest run against real Postgres so every authorization path is exercised as
 deployed. Route
 handlers read cookies from the `Request` and write them onto the `Response` rather
@@ -448,6 +466,17 @@ function that tests can call directly without booting Next.
   a wrong token and a revoked one return byte-identical 404s. Plus iCal correctness
   (stable UIDs, octet-safe line folding, `STATUS:CANCELLED` rather than a silent
   removal) and notification dispatch, preference gating and suppression records.
+- **`tests/officiating.test.ts`** — referee self-service, which is mostly a set of
+  refusals: a referee cannot volunteer *another* referee (the body's `refereeId` is
+  ignored because the schema has no such field), cannot request a game they have a
+  conflict of interest in — with no override available to them at all — cannot approve
+  their own request, and cannot withdraw somebody else's. A coach and a viewer cannot
+  request; a referee-role member with no `Referee` record is told why. Plus: approval
+  creates an accepted assignment and audits both rows, the hard rules are re-checked at
+  approval rather than trusted from request time, an assigner's override reason lands
+  against the specific conflict, the five board buckets sort correctly, a declined
+  assignment can be taken back, and the batch evaluator's verdict matches
+  `detectOfficialConflicts` game-by-game.
 
 ## Project layout
 
@@ -525,6 +554,85 @@ row means the column defaults.
 
 Everything soft-deletes. Money is integer cents — no floats, no `Decimal`
 serialization traps.
+
+## What each role sees
+
+The dashboard is chosen by role, from the same permission matrix the server enforces
+([`src/app/(app)/app/[orgSlug]/page.tsx`](src/app/\(app\)/app/[orgSlug]/page.tsx)
+dispatches; the loaders are in [`src/lib/dashboard.ts`](src/lib/dashboard.ts)). Each
+one leads with the thing that role opens the app to find out, rather than one page
+accumulating a conditional per panel:
+
+| Role | Leads with |
+| --- | --- |
+| coach | their next fixture, their teams' upcoming games, roster size and record |
+| referee | what is waiting on their answer, then confirmed games, then what is going spare |
+| viewer | what is on next, recent results, divisions, and how to subscribe |
+| organizer | what is unfinished across the org — unstaffed games, an unpublished draft, requests waiting |
+
+Navigation is shaped the same way: a coach gets a direct link to their own team, a
+referee gets **My games** with a badge counting assignments still needing an answer.
+Both are resolved from the session, never from the URL. Hiding a link is a
+convenience, not a control — every endpoint re-checks, which is what
+`tests/officiating.test.ts` and `tests/team-scope.test.ts` assert directly against the
+API.
+
+Role is a *presentation* choice. It changes which panels render, never what the server
+will accept.
+
+## Officiating: assignments and requests
+
+A referee's page ([`/app/[orgSlug]/officiating`](src/app/\(app\)/app/[orgSlug]/officiating/page.tsx))
+splits their work into the states they actually distinguish:
+
+| Section | Means |
+| --- | --- |
+| Waiting on your answer | offered to them; an assigner is blocked until they respond |
+| Confirmed | accepted — they are officiating |
+| You asked for these | their own requests, pending an assigner |
+| You declined | kept visible, because a mistaken decline is recoverable |
+| Games needing an official | short a crew member, with a per-game verdict on whether *they* may take it |
+
+Their availability editor lives on that page too. It had to: a referee does not hold
+`roster:read`, so `/people/[personId]` — the only place availability could be edited —
+was unreachable to them. They held `official:availability:write:own` with no page to
+exercise it on.
+
+### Asking to officiate
+
+`OfficiatingRequest` is its own model, deliberately **not** a `GameOfficial` with an
+extra status. A `GameOfficial` row means "on the crew" everywhere in this codebase,
+and conflict detection counts any non-declined assignment as consuming that referee's
+time and daily cap. Folding requests into it would mean merely *asking* for a game
+blocked you from being assigned elsewhere — and would let a referee manufacture a
+conflict for themselves.
+
+Four rules the request endpoint enforces:
+
+1. **The referee comes from the session.** `createOfficiatingRequestSchema` has no
+   `refereeId` field, so there is nothing to spoof. A referee volunteers for
+   themselves or not at all.
+2. **Hard constraints are refused outright, with no override.** An assigner may
+   override a conflict of interest with a logged reason; a referee may not do it for
+   themselves, or the rule is decorative.
+3. **They are re-checked at approval time**, not trusted from when the request was
+   made — the crew, the referee's other games and the kickoff can all have moved.
+4. **Approval creates the assignment in the same transaction** as the status change,
+   already `accepted`. A request marked approved with no assignment behind it is a lie
+   the referee acts on, and asking someone to confirm a game they proposed is a
+   pointless round trip.
+
+Open positions are computed from **live** `GameOfficial` rows even for a reader who is
+otherwise served the published snapshot. Publishing freezes the crew alongside the
+fixtures, but a decline happens operationally and does not wait for a new version — so
+reading the frozen crew would hide exactly the openings this feature exists for, and
+would disagree with the endpoint that decides whether a request is accepted.
+
+That last point is the general pattern here: the batch evaluator that labels a whole
+season of candidate games and the single-game gate at write time both call one pure
+function, `officialConflicts` in [`src/lib/conflicts.ts`](src/lib/conflicts.ts).
+`detectOfficialConflicts` is a thin wrapper over it. A referee is never shown a button
+the server would refuse, and a test asserts the two agree game-by-game.
 
 ## Editing the schedule
 

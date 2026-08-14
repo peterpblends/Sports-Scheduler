@@ -220,6 +220,43 @@ jobs:
             join \"League\" l on l.id = s.\"leagueId\"
             where l.\"orgId\" = '$org' and s.\"publishedVersionId\" is not null")"
 
+          # The seed anchors the season to the current week, so a third of it is
+          # already in the past. Recording scores for those games is what makes the
+          # coach and viewer "recent results" panels show anything — an unplayed
+          # past fixture is deliberately not treated as a result.
+          #
+          # Through the API rather than an UPDATE, so the score entries land in the
+          # audit trail like any other edit.
+          played=0
+          for row in $(psql -c "select g.id || ':' || (abs(hashtext(g.id)) % 4) || ':' || (abs(hashtext(g.id || 'a')) % 4)
+                                from \"Game\" g
+                                join \"Season\" s on s.id = g.\"seasonId\"
+                                join \"League\" l on l.id = s.\"leagueId\"
+                                where l.\"orgId\" = '$org'
+                                  and g.\"deletedAt\" is null
+                                  and g.\"startTime\" < now()
+                                order by g.\"startTime\""); do
+            gameId=${row%%:*}
+            rest=${row#*:}
+            home=${rest%%:*}
+            away=${rest#*:}
+            code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
+              -X PATCH "$api/orgs/$org/games/$gameId" \
+              -H 'content-type: application/json' \
+              -d "{\"status\":\"played\",\"homeScore\":$home,\"awayScore\":$away}")
+            [ "$code" = "200" ] && played=$((played+1))
+          done
+          echo "Recorded results for $played games already in the past."
+
+      # The generator fills every available official to their daily cap, so straight
+      # after generating there is nothing any of them can volunteer for. Freeing a few
+      # positions reproduces the situation the request flow is actually for: a slot
+      # that opened up after the schedule was built.
+      - name: Open up a few officiating slots
+        if: inputs.seed
+        continue-on-error: true
+        run: npm run demo:openings
+
       - name: Announce
         env:
           URL: ${{ steps.tunnel.outputs.url }}

@@ -52,15 +52,16 @@ model User {
   // Set when the user's credentials change, invalidating every issued session.
   sessionsValidFrom DateTime @default(now()) @db.Timestamptz(3)
 
-  memberships        Membership[]
-  sessions           Session[]
-  passwordResets     PasswordResetToken[]
-  invitationsCreated Invitation[]         @relation("InvitationCreatedBy")
-  auditEvents        AuditEvent[]
-  person             Person?
-  scheduleVersions   ScheduleVersion[] @relation("VersionAuthor")
-  calendarFeeds      CalendarFeed[]
-  notificationPrefs  NotificationPreference[]
+  memberships          Membership[]
+  sessions             Session[]
+  passwordResets       PasswordResetToken[]
+  invitationsCreated   Invitation[]             @relation("InvitationCreatedBy")
+  auditEvents          AuditEvent[]
+  person               Person?
+  scheduleVersions     ScheduleVersion[]        @relation("VersionAuthor")
+  calendarFeeds        CalendarFeed[]
+  notificationPrefs    NotificationPreference[]
+  officiatingDecisions OfficiatingRequest[]     @relation("OfficiatingRequestDecidedBy")
 
   @@index([deletedAt])
 }
@@ -108,23 +109,23 @@ model Organization {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  memberships Membership[]
-  invitations Invitation[]
-  auditEvents AuditEvent[]
-  leagues     League[]
-  people      Person[]
-  venues      Venue[]
-  blackouts   BlackoutDate[]
-  calendarFeeds CalendarFeed[]
+  memberships       Membership[]
+  invitations       Invitation[]
+  auditEvents       AuditEvent[]
+  leagues           League[]
+  people            Person[]
+  venues            Venue[]
+  blackouts         BlackoutDate[]
+  calendarFeeds     CalendarFeed[]
   notificationPrefs NotificationPreference[]
 
   @@index([deletedAt])
 }
 
 model Membership {
-  id     String @id @default(cuid())
+  id     String       @id @default(cuid())
   userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   orgId  String
   org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   role   Role
@@ -141,18 +142,18 @@ model Membership {
 }
 
 model Invitation {
-  id          String    @id @default(cuid())
+  id          String       @id @default(cuid())
   orgId       String
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   email       String
   role        Role
-  tokenHash   String    @unique
+  tokenHash   String       @unique
   createdById String
-  createdBy   User      @relation("InvitationCreatedBy", fields: [createdById], references: [id])
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
-  expiresAt   DateTime  @db.Timestamptz(3)
-  acceptedAt  DateTime? @db.Timestamptz(3)
-  revokedAt   DateTime? @db.Timestamptz(3)
+  createdBy   User         @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  expiresAt   DateTime     @db.Timestamptz(3)
+  acceptedAt  DateTime?    @db.Timestamptz(3)
+  revokedAt   DateTime?    @db.Timestamptz(3)
 
   @@index([orgId])
   @@index([email])
@@ -163,20 +164,20 @@ model Invitation {
 // ---------------------------------------------------------------------------
 
 model AuditEvent {
-  id         String   @id @default(cuid())
+  id         String        @id @default(cuid())
   orgId      String?
   org        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
   actorId    String?
-  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actor      User?         @relation(fields: [actorId], references: [id], onDelete: SetNull)
   actorLabel String
   entityType String
   entityId   String
   action     String
   // Field-level before/after diff: { field: { before, after } }
-  diff       Json     @default("{}")
+  diff       Json          @default("{}")
   // Free-form context (ip, user agent, override reason, version id, ...).
-  meta       Json     @default("{}")
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  meta       Json          @default("{}")
+  createdAt  DateTime      @default(now()) @db.Timestamptz(3)
 
   @@index([orgId, createdAt])
   @@index([entityType, entityId, createdAt])
@@ -223,9 +224,9 @@ model Season {
   updatedAt DateTime     @updatedAt @db.Timestamptz(3)
   deletedAt DateTime?    @db.Timestamptz(3)
 
-  divisions Division[]
-  games     Game[]
-  versions  ScheduleVersion[] @relation("SeasonVersions")
+  divisions     Division[]
+  games         Game[]
+  versions      ScheduleVersion[] @relation("SeasonVersions")
   calendarFeeds CalendarFeed[]
 
   /// The single version low-privilege roles and the public are shown. Null until
@@ -275,10 +276,10 @@ model Team {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  memberships TeamMembership[]
-  homeGames   Game[]           @relation("HomeTeam")
-  awayGames   Game[]           @relation("AwayTeam")
-  blackouts   BlackoutDate[]
+  memberships   TeamMembership[]
+  homeGames     Game[]           @relation("HomeTeam")
+  awayGames     Game[]           @relation("AwayTeam")
+  blackouts     BlackoutDate[]
   calendarFeeds CalendarFeed[]
 
   @@index([divisionId, deletedAt])
@@ -393,21 +394,22 @@ model Referee {
   personId String @unique
   person   Person @relation(fields: [personId], references: [id], onDelete: Cascade)
 
-  certificationLevel String?
+  certificationLevel  String?
   /// Integer cents per game.
-  payRateCents       Int?
-  maxGamesPerDay     Int     @default(3)
+  payRateCents        Int?
+  maxGamesPerDay      Int     @default(3)
   /// Minutes of travel the scheduler must leave between venues.
-  travelBufferMinutes Int    @default(30)
+  travelBufferMinutes Int     @default(30)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  preferredVenues Venue[]              @relation("RefereePreferredVenues")
-  availability    RefereeAvailability[]
-  assignments     GameOfficial[]
-  calendarFeeds   CalendarFeed[]
+  preferredVenues     Venue[]               @relation("RefereePreferredVenues")
+  availability        RefereeAvailability[]
+  assignments         GameOfficial[]
+  calendarFeeds       CalendarFeed[]
+  officiatingRequests OfficiatingRequest[]
 
   @@index([deletedAt])
 }
@@ -442,32 +444,32 @@ model RefereeAvailability {
 // ---------------------------------------------------------------------------
 
 model Venue {
-  id      String       @id @default(cuid())
-  orgId   String
-  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  name    String
-  address String?
+  id       String       @id @default(cuid())
+  orgId    String
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name     String
+  address  String?
   /// IANA zone. Every game at this venue renders in this zone.
   timezone String
-  notes   String?
+  notes    String?
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  fields            Field[]
-  preferringTeams   Team[]
+  fields             Field[]
+  preferringTeams    Team[]
   preferringReferees Referee[]      @relation("RefereePreferredVenues")
-  blackouts         BlackoutDate[]
+  blackouts          BlackoutDate[]
 
   @@index([orgId, deletedAt])
 }
 
 /// A playable surface. A venue can have several.
 model Field {
-  id      String @id @default(cuid())
+  id      String  @id @default(cuid())
   venueId String
-  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  venue   Venue   @relation(fields: [venueId], references: [id], onDelete: Cascade)
   name    String
   notes   String?
 
@@ -563,7 +565,8 @@ model Game {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  officials GameOfficial[]
+  officials           GameOfficial[]
+  officiatingRequests OfficiatingRequest[]
 
   @@index([seasonId, startTime])
   @@index([divisionId, startTime])
@@ -659,7 +662,6 @@ enum ScheduleVersionSource {
 
 /**
  * An immutable snapshot of a season's games.
- *
  * Created on every generation and every manual save. Nothing ever updates
  * `snapshot` — restoring an old version writes a *new* version, so history only
  * ever grows. Team, venue and official names are denormalized into the snapshot on
@@ -667,9 +669,9 @@ enum ScheduleVersionSource {
  * renamed or a venue is removed.
  */
 model ScheduleVersion {
-  id       String @id @default(cuid())
+  id       String                @id @default(cuid())
   seasonId String
-  season   Season @relation("SeasonVersions", fields: [seasonId], references: [id], onDelete: Cascade)
+  season   Season                @relation("SeasonVersions", fields: [seasonId], references: [id], onDelete: Cascade)
   /// Sequential within the season, starting at 1.
   number   Int
   label    String
@@ -715,11 +717,9 @@ enum CalendarFeedScope {
 
 /**
  * A live iCal subscription URL.
- *
  * Calendar clients cannot send a session cookie, so the secret has to travel in the
  * path. It is stored as a SHA-256 digest for the same reason sessions are: a leaked
  * table must not hand anyone a working feed. The token is shown once, at creation.
- *
  * A feed is bound to the user who created it *and* to a scope. Authorization is
  * re-derived from that user's live role on every fetch, so revoking their membership
  * kills the feed without anyone having to remember to delete it.
@@ -731,16 +731,16 @@ model CalendarFeed {
   userId String
   user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  scope CalendarFeedScope
+  scope     CalendarFeedScope
   /// Set when scope is `team`.
-  teamId String?
-  team   Team?   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  teamId    String?
+  team      Team?             @relation(fields: [teamId], references: [id], onDelete: Cascade)
   /// Set when scope is `referee`.
   refereeId String?
-  referee   Referee? @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  referee   Referee?          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
   /// Optional: pin the feed to one season rather than following the active one.
-  seasonId String?
-  season   Season? @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  seasonId  String?
+  season    Season?           @relation(fields: [seasonId], references: [id], onDelete: Cascade)
 
   tokenHash String @unique
   label     String
@@ -755,7 +755,6 @@ model CalendarFeed {
 
 /**
  * Per-user, per-org notification settings.
- *
  * Absent rows mean the defaults below, so nobody has to be back-filled when a new
  * notification kind is added — a missing row and an untouched row behave the same.
  */
@@ -767,16 +766,62 @@ model NotificationPreference {
   org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   /// A version was published, so the schedule people see has changed.
-  schedulePublished Boolean @default(true)
+  schedulePublished  Boolean @default(true)
   /// A game the recipient is involved in moved.
-  gameRescheduled   Boolean @default(true)
+  gameRescheduled    Boolean @default(true)
   /// An official was offered, reassigned or unassigned from a game.
-  assignmentChanged Boolean @default(true)
+  assignmentChanged  Boolean @default(true)
   /// Somebody joined or left a team the recipient is staff of.
-  rosterChanged     Boolean @default(false)
+  rosterChanged      Boolean @default(false)
+  /// A referee asked to officiate a game, or an assigner answered such a request.
+  officiatingRequest Boolean @default(true)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@unique([userId, orgId])
+}
+
+enum OfficiatingRequestStatus {
+  pending
+  approved
+  rejected
+  withdrawn
+}
+
+/// A referee asking for a game, which is the opposite direction of a GameOfficial.
+///
+/// Deliberately not modelled as a `GameOfficial` with an extra status. A
+/// GameOfficial row means "this referee is on this crew" everywhere in the
+/// codebase — `detectOfficialConflicts` counts any non-declined assignment as
+/// occupying the referee's time and consuming their daily cap. Folding requests
+/// into that table would make merely *asking* for a game block the referee from
+/// being assigned elsewhere, and would let a referee manufacture a conflict for
+/// themselves. So a request is its own row, and turns into a GameOfficial only
+/// when an assigner approves it.
+model OfficiatingRequest {
+  id        String  @id @default(cuid())
+  gameId    String
+  game      Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  refereeId String
+  referee   Referee @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+
+  position OfficialPosition
+  status   OfficiatingRequestStatus @default(pending)
+  /// The referee's message to the assigner.
+  note     String?
+
+  /// Who answered, and what they said. Kept on the row as well as in the audit
+  /// trail so the referee can see the reason without holding `audit:read`.
+  decidedById  String?
+  decidedBy    User?     @relation("OfficiatingRequestDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt    DateTime? @db.Timestamptz(3)
+  decisionNote String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([refereeId, status, deletedAt])
+  @@index([gameId, deletedAt])
 }

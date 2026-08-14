@@ -6,14 +6,22 @@ import { diffRecords, recordAudit } from '@/lib/audit'
 
 type Ctx = { params: Promise<{ orgId: string }> }
 
-const KINDS = ['schedulePublished', 'gameRescheduled', 'assignmentChanged', 'rosterChanged'] as const
+/**
+ * Derived from `NOTIFICATION_DEFAULTS` rather than written out again.
+ *
+ * That record is typed `Record<NotificationKind, boolean>`, so adding a kind to the
+ * union forces it to be added there — and this endpoint and its schema then pick it
+ * up for free. A hand-maintained copy here would silently ignore new kinds, which
+ * is a preference that appears in the UI and does nothing when you toggle it.
+ */
+const KINDS = Object.keys(NOTIFICATION_DEFAULTS) as NotificationKind[]
 
-const schema = z.object({
-  schedulePublished: z.boolean().optional(),
-  gameRescheduled: z.boolean().optional(),
-  assignmentChanged: z.boolean().optional(),
-  rosterChanged: z.boolean().optional(),
-})
+const schema = z.object(
+  Object.fromEntries(KINDS.map((kind) => [kind, z.boolean().optional()])) as Record<
+    NotificationKind,
+    z.ZodOptional<z.ZodBoolean>
+  >,
+)
 
 /**
  * A user's own notification settings for one org.

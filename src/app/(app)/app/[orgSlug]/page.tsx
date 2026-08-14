@@ -4,17 +4,32 @@ import { requireOrgAccess } from '@/lib/auth-server'
 import { ROLE_DESCRIPTIONS, can } from '@/lib/authz'
 import { Alert, Card, EmptyState, PageHeader, RoleBadge } from '@/components/ui'
 import { readSchedule, type ScheduleRow } from '@/lib/schedule/read'
-import { refereeForUser, staffTeamIds } from '@/lib/scope'
+import { refereeForUser } from '@/lib/scope'
+import { loadCoachDashboard, loadRefereeDashboard, loadViewerDashboard } from '@/lib/dashboard'
+import {
+  CoachDashboardView,
+  RefereeDashboardView,
+  ViewerDashboardView,
+} from '@/components/dashboards'
 import { formatInstantInZone } from '@/lib/time'
 
 /**
  * The dashboard, answering "what needs me today" rather than "what is this app".
  *
- * What it shows is decided by role, and by the same permission matrix the server
- * enforces: an assigner sees unstaffed games, a scheduler sees whether the draft has
- * diverged from what is published, a coach sees their own team's next fixtures, a
- * referee sees the assignments waiting on their answer. Nothing here is a second
- * source of truth — every panel links to the page that owns it.
+ * Which dashboard you get is decided by role, using the same permission matrix the
+ * server enforces. Rather than one page accumulating a conditional per panel, the
+ * three read-mostly roles each have their own view and loader:
+ *
+ *  * a **coach** leads with their next fixture, their teams and their roster;
+ *  * a **referee** leads with what is waiting on their answer;
+ *  * a **viewer** leads with what is on and how to follow it.
+ *
+ * Organizers keep the operational view below, because their question really is
+ * "what is unfinished across the whole org" — unstaffed games, an unpublished draft,
+ * a season that is not ready to schedule.
+ *
+ * Role is a *presentation* choice here. Every link on every one of these leads to a
+ * page that re-checks permission, and every endpoint behind them re-checks again.
  */
 export default async function OrgDashboard({ params }: { params: Promise<{ orgSlug: string }> }) {
   const { orgSlug } = await params
@@ -22,8 +37,9 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
 
   const canReadDrafts = can(role, 'schedule:read')
   const canAssign = can(role, 'official:assign')
+  const isOrganizer = can(role, 'schedule:edit')
 
-  const [org, seasons, counts] = await Promise.all([
+  const [org, seasons] = await Promise.all([
     prisma.organization.findUniqueOrThrow({ where: { id: orgId } }),
     prisma.season.findMany({
       where: { deletedAt: null, league: { orgId, deletedAt: null } },
@@ -31,29 +47,99 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
       include: {
         league: { select: { name: true } },
         publishedVersion: { select: { number: true, publishedAt: true } },
-        _count: { select: { games: { where: { deletedAt: null } }, divisions: { where: { deletedAt: null } } } },
+        _count: {
+          select: {
+            games: { where: { deletedAt: null } },
+            divisions: { where: { deletedAt: null } },
+          },
+        },
       },
     }),
-    Promise.all([
-      prisma.league.count({ where: { orgId, deletedAt: null } }),
-      prisma.team.count({
-        where: { deletedAt: null, division: { season: { league: { orgId, deletedAt: null } } } },
-      }),
-      prisma.field.count({ where: { deletedAt: null, venue: { orgId, deletedAt: null } } }),
-      prisma.referee.count({ where: { deletedAt: null, person: { orgId, deletedAt: null } } }),
-      prisma.timeSlot.count({
-        where: { deletedAt: null, field: { deletedAt: null, venue: { orgId, deletedAt: null } } },
-      }),
-    ]).then(([leagues, teams, fields, referees, slots]) => ({
-      leagues,
-      teams,
-      fields,
-      referees,
-      slots,
-    })),
   ])
 
   const season = seasons.find((candidate) => candidate.status === 'active') ?? seasons[0] ?? null
+  const seasonLabel = season ? `${season.league.name} · ${season.name}` : 'No seasons yet'
+
+  const header = (
+    <PageHeader
+      title={orgName}
+      subtitle={`${seasonLabel} · times shown in each venue's local zone`}
+      action={<RoleBadge role={role} />}
+    />
+  )
+
+  // --- referee -------------------------------------------------------------
+
+  if (can(role, 'official:read:own') && !isOrganizer) {
+    const referee = await refereeForUser(actor.userId, orgId)
+    const board = referee
+      ? await loadRefereeDashboard({
+          orgId,
+          seasonId: season?.id ?? null,
+          refereeId: referee.id,
+          canReadDrafts,
+        })
+      : null
+
+    return (
+      <>
+        {header}
+        <RefereeDashboardView
+          board={board}
+          orgSlug={orgSlug}
+          refereeName={referee?.person.name ?? null}
+        />
+      </>
+    )
+  }
+
+  // --- coach ---------------------------------------------------------------
+
+  if (can(role, 'roster:write:own') && !isOrganizer) {
+    const data = await loadCoachDashboard({
+      orgId,
+      seasonId: season?.id ?? null,
+      userId: actor.userId,
+      canReadDrafts,
+    })
+
+    return (
+      <>
+        {header}
+        <CoachDashboardView data={data} orgSlug={orgSlug} />
+      </>
+    )
+  }
+
+  // --- viewer --------------------------------------------------------------
+
+  if (!isOrganizer) {
+    const data = await loadViewerDashboard({
+      orgId,
+      seasonId: season?.id ?? null,
+      canReadDrafts,
+    })
+
+    return (
+      <>
+        {header}
+        <ViewerDashboardView data={data} orgSlug={orgSlug} publicSlug={org.slug} />
+      </>
+    )
+  }
+
+  // --- organizer -----------------------------------------------------------
+
+  const counts = await Promise.all([
+    prisma.league.count({ where: { orgId, deletedAt: null } }),
+    prisma.team.count({
+      where: { deletedAt: null, division: { season: { league: { orgId, deletedAt: null } } } },
+    }),
+    prisma.field.count({ where: { deletedAt: null, venue: { orgId, deletedAt: null } } }),
+    prisma.timeSlot.count({
+      where: { deletedAt: null, field: { deletedAt: null, venue: { orgId, deletedAt: null } } },
+    }),
+  ]).then(([leagues, teams, fields, slots]) => ({ leagues, teams, fields, slots }))
 
   const schedule = season
     ? await readSchedule({ orgId, seasonId: season.id, canReadDrafts })
@@ -64,41 +150,6 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
     .filter((row) => row.startTime.getTime() >= now.getTime() && row.status !== 'cancelled')
     .slice(0, 6)
 
-  // Own-scope panels. A coach's teams and a referee's assignments are resolved from
-  // their session, never from a query parameter.
-  const [ownTeamIds, ownReferee] = await Promise.all([
-    can(role, 'roster:write:own') ? staffTeamIds(actor.userId, orgId) : Promise.resolve([]),
-    can(role, 'official:read:own') ? refereeForUser(actor.userId, orgId) : Promise.resolve(null),
-  ])
-
-  const ownTeamGames = ownTeamIds.length
-    ? (schedule?.rows ?? [])
-        .filter(
-          (row) =>
-            row.startTime.getTime() >= now.getTime() &&
-            (ownTeamIds.includes(row.homeTeamId) || ownTeamIds.includes(row.awayTeamId)),
-        )
-        .slice(0, 6)
-    : []
-
-  const ownAssignments = ownReferee
-    ? (schedule?.rows ?? [])
-        .filter(
-          (row) =>
-            row.startTime.getTime() >= now.getTime() &&
-            row.officials.some((official) => official.refereeId === ownReferee.id),
-        )
-        .slice(0, 6)
-    : []
-
-  const awaitingAnswer = ownReferee
-    ? ownAssignments.filter((row) =>
-        row.officials.some(
-          (official) => official.refereeId === ownReferee.id && official.status === 'pending',
-        ),
-      ).length
-    : 0
-
   const unstaffed = canAssign
     ? (schedule?.rows ?? []).filter(
         (row) =>
@@ -108,16 +159,25 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
       ).length
     : 0
 
+  const openRequests = can(role, 'official:request:review')
+    ? await prisma.officiatingRequest.count({
+        where: {
+          status: 'pending',
+          deletedAt: null,
+          game: {
+            deletedAt: null,
+            season: { deletedAt: null, league: { orgId, deletedAt: null } },
+          },
+        },
+      })
+    : 0
+
   const setupDone =
     counts.leagues > 0 && counts.teams >= 2 && counts.fields > 0 && counts.slots > 0
 
   return (
     <>
-      <PageHeader
-        title={orgName}
-        subtitle={`Signed in as ${actor.email} · ${org.timezone}`}
-        action={<RoleBadge role={role} />}
-      />
+      {header}
 
       {!setupDone && can(role, 'structure:write') && (
         <div className="mb-6">
@@ -131,7 +191,7 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
         </div>
       )}
 
-      {canReadDrafts && season && !season.publishedVersion && season._count.games > 0 && (
+      {season && !season.publishedVersion && season._count.games > 0 && (
         <div className="mb-6">
           <Alert>
             {season._count.games} games exist in the draft for {season.name}, but nothing is
@@ -143,16 +203,20 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
         </div>
       )}
 
-      {awaitingAnswer > 0 && (
+      {openRequests > 0 && (
         <div className="mb-6">
           <Alert kind="info">
-            {awaitingAnswer} assignment{awaitingAnswer === 1 ? '' : 's'} waiting on your answer.
-            Open a game below to accept or decline.
+            {openRequests} referee{openRequests === 1 ? '' : 's'} {openRequests === 1 ? 'has' : 'have'}{' '}
+            asked for a game.{' '}
+            <Link href={`/app/${orgSlug}/schedule/officials`} className="underline">
+              Answer them
+            </Link>{' '}
+            — approving is the quickest way to close a gap in a crew.
           </Alert>
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
           label={season ? `Games in ${season.name}` : 'Games'}
           value={schedule?.totalBeforeFilter ?? 0}
@@ -168,66 +232,25 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
             hrefLabel="Assignment board"
           />
         )}
-        {can(role, 'structure:read') && (
-          <Stat label="Teams" value={counts.teams} href={`/app/${orgSlug}/leagues`} hrefLabel="Leagues" />
-        )}
-        {can(role, 'venue:read') && (
-          <Stat label="Fields" value={counts.fields} href={`/app/${orgSlug}/venues`} hrefLabel="Venues" />
-        )}
-        {!canAssign && !can(role, 'structure:read') && (
-          <Card>
-            <div className="text-xs uppercase tracking-wide text-ink-500 dark:text-ink-400">
-              Your role
-            </div>
-            <p className="mt-2 text-sm text-ink-600 dark:text-ink-300">{ROLE_DESCRIPTIONS[role]}</p>
-          </Card>
-        )}
+        <Stat label="Teams" value={counts.teams} href={`/app/${orgSlug}/leagues`} hrefLabel="Leagues" />
+        <Stat label="Fields" value={counts.fields} href={`/app/${orgSlug}/venues`} hrefLabel="Venues" />
       </div>
 
-      {ownTeamGames.length > 0 && (
-        <div className="mt-6">
-          <GameList
-            title="Your team's next games"
-            subtitle="Teams you are staff of."
-            rows={ownTeamGames}
-            orgSlug={orgSlug}
-          />
-        </div>
-      )}
+      <div className="mt-6">
+        <OrganizerGameList
+          title="Next up"
+          subtitle={seasonLabel}
+          rows={upcoming}
+          orgSlug={orgSlug}
+          emptyLabel={
+            schedule?.source === 'none'
+              ? 'Nothing has been published for this season yet.'
+              : 'No upcoming games.'
+          }
+        />
+      </div>
 
-      {ownReferee && (
-        <div className="mt-6">
-          <GameList
-            title="Your next assignments"
-            subtitle={`As ${ownReferee.person.name}. Open a game to accept or decline.`}
-            rows={ownAssignments}
-            orgSlug={orgSlug}
-            emptyLabel="Nothing assigned to you yet."
-          />
-        </div>
-      )}
-
-      {!ownReferee && ownTeamGames.length === 0 && (
-        <div className="mt-6">
-          <GameList
-            title="Next up"
-            subtitle={
-              season
-                ? `${season.league.name} · ${season.name}`
-                : 'No seasons yet.'
-            }
-            rows={upcoming}
-            orgSlug={orgSlug}
-            emptyLabel={
-              schedule?.source === 'none'
-                ? 'Nothing has been published for this season yet.'
-                : 'No upcoming games.'
-            }
-          />
-        </div>
-      )}
-
-      {can(role, 'structure:read') && seasons.length > 0 && (
+      {seasons.length > 0 && (
         <Card className="mt-6">
           <h2 className="text-base font-semibold">Seasons</h2>
           <div className="mt-3 overflow-x-auto">
@@ -275,6 +298,13 @@ export default async function OrgDashboard({ params }: { params: Promise<{ orgSl
           </div>
         </Card>
       )}
+
+      <Card className="mt-6">
+        <div className="text-xs uppercase tracking-wide text-ink-500 dark:text-ink-400">
+          Your role
+        </div>
+        <p className="mt-2 text-sm text-ink-600 dark:text-ink-300">{ROLE_DESCRIPTIONS[role]}</p>
+      </Card>
     </>
   )
 }
@@ -313,7 +343,7 @@ function Stat({
   )
 }
 
-function GameList({
+function OrganizerGameList({
   title,
   subtitle,
   rows,
@@ -324,7 +354,7 @@ function GameList({
   subtitle: string
   rows: ScheduleRow[]
   orgSlug: string
-  emptyLabel?: string
+  emptyLabel: string
 }) {
   return (
     <Card>
@@ -332,7 +362,7 @@ function GameList({
       <p className="mt-1 text-sm text-ink-500 dark:text-ink-300">{subtitle}</p>
       {rows.length === 0 ? (
         <div className="mt-4">
-          <EmptyState>{emptyLabel ?? 'Nothing scheduled.'}</EmptyState>
+          <EmptyState>{emptyLabel}</EmptyState>
         </div>
       ) : (
         <ul className="mt-3 divide-y divide-ink-200 text-sm dark:divide-ink-700">

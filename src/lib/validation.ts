@@ -401,6 +401,28 @@ export const updateGameOfficialSchema = z.object({
   payRateCentsOverride: z.number().int().min(0).max(1_000_000).nullish(),
 })
 
+// Officiating requests -------------------------------------------------------
+
+/**
+ * Note the absence of `refereeId`. A referee requests for themselves and nobody
+ * else; the identity comes from the session in `requireOwnRefereeRequest`. Adding
+ * the field here — even validated — would be the whole vulnerability.
+ */
+export const createOfficiatingRequestSchema = z.object({
+  position: officialPositionSchema,
+  note: z.string().trim().max(500).optional(),
+})
+
+export const decideOfficiatingRequestSchema = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  decisionNote: z.string().trim().max(500).optional(),
+  /**
+   * An approval places the referee on the crew, so it is subject to the same hard
+   * constraints as any assignment and the same override-with-reason escape.
+   */
+  overrideReason: z.string().trim().min(3).max(500).optional(),
+})
+
 // Blackout -------------------------------------------------------------------
 
 export const blackoutScopeSchema = z.enum(['org', 'division', 'team', 'venue'])

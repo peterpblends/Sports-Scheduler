@@ -115,7 +115,7 @@ This is a separate, manual, confirmed workflow rather than a step in the deploy 
 purpose: seeding writes data, and writing data should never be a side effect of
 shipping code.
 
-It creates 2 leagues, 17 teams, 229 people, 6 officials, and 2 venues over 3 fields,
+It creates 2 leagues, 17 teams, 233 people, 10 officials, and 2 venues over 3 fields,
 with six logins — `owner@`, `admin@`, `scheduler@`, `coach@`, `referee@` and
 `viewer@riverside.example`, password `demo-password-123`.
 

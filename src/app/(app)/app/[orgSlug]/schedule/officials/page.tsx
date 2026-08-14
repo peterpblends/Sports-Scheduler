@@ -5,7 +5,10 @@ import { requireOrgAccess } from '@/lib/auth-server'
 import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'
 import { readSchedule, groupByLocalDate } from '@/lib/schedule/read'
 import { formatDayHeading } from '@/components/schedule-views'
-import { formatClockInZone } from '@/lib/time'
+import { formatClockInZone, formatInstantInZone } from '@/lib/time'
+import { can } from '@/lib/authz'
+import { pendingRequestsForOrg } from '@/lib/officiating'
+import { DecideRequest } from '@/components/officiating'
 
 /**
  * The assignment board: every game short of a full crew, worst first.
@@ -24,7 +27,7 @@ export default async function OfficialsBoardPage({
 }) {
   const { orgSlug } = await params
   const query = await searchParams
-  const { orgId } = await requireOrgAccess(orgSlug, 'official:assign')
+  const { orgId, role } = await requireOrgAccess(orgSlug, 'official:assign')
 
   const seasons = await prisma.season.findMany({
     where: { deletedAt: null, league: { orgId, deletedAt: null } },
@@ -73,6 +76,10 @@ export default async function OfficialsBoardPage({
 
   const days = groupByLocalDate(shown.map((entry) => entry.row))
   const byId = new Map(shown.map((entry) => [entry.row.id, entry]))
+
+  // Referees who have volunteered. Shown above the holes rather than below them,
+  // because approving a request is the cheapest way to close one.
+  const requests = can(role, 'official:request:review') ? await pendingRequestsForOrg(orgId) : []
 
   const linkTo = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams()
@@ -155,6 +162,59 @@ export default async function OfficialsBoardPage({
           </button>
         </form>
       </Card>
+
+      {requests.length > 0 && (
+        <Card className="mb-6 border-turf-500/40">
+          <h2 className="text-base font-semibold">
+            {requests.length} referee{requests.length === 1 ? '' : 's'} asking for a game
+          </h2>
+          <p className="mt-1 text-sm text-ink-500 dark:text-ink-300">
+            They volunteered, so approving puts them straight on the crew as accepted — no second
+            round of confirming. The hard rules are re-checked when you approve, not when they
+            asked.
+          </p>
+          <ul className="mt-3 divide-y divide-ink-200 dark:divide-ink-700">
+            {requests.map((request) => {
+              const timezone = request.game.field?.venue.timezone ?? 'UTC'
+              return (
+                <li
+                  key={request.id}
+                  className="flex flex-wrap items-center justify-between gap-3 py-3"
+                >
+                  <div className="text-sm">
+                    <span className="font-medium">{request.referee.person.name}</span>
+                    <span className="text-ink-500 dark:text-ink-400">
+                      {' '}
+                      wants {request.position} for{' '}
+                    </span>
+                    <Link
+                      href={`/app/${orgSlug}/games/${request.gameId}`}
+                      className="font-medium text-turf-600 hover:underline"
+                    >
+                      {request.game.homeTeam.name} v {request.game.awayTeam.name}
+                    </Link>
+                    <div className="mt-0.5 text-xs text-ink-500 dark:text-ink-400">
+                      {formatInstantInZone(request.game.startTime, timezone)}
+                      {request.game.field &&
+                        ` · ${request.game.field.venue.name} · ${request.game.field.name}`}
+                    </div>
+                    {request.note && (
+                      <p className="mt-1 text-xs italic text-ink-600 dark:text-ink-300">
+                        “{request.note}”
+                      </p>
+                    )}
+                  </div>
+                  <DecideRequest
+                    orgId={orgId}
+                    requestId={request.id}
+                    refereeName={request.referee.person.name}
+                  />
+                </li>
+              )
+            })}
+          </ul>
+        </Card>
+      )}
 
       {schedule.rows.length === 0 ? (
         <EmptyState>No games in this season yet.</EmptyState>

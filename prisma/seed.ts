@@ -36,6 +36,32 @@ function pick<T>(items: readonly T[]): T {
 }
 
 const date = (iso: string) => new Date(`${iso}T00:00:00.000Z`)
+const addDays = (d: Date, days: number) => new Date(d.getTime() + days * 86_400_000)
+
+/**
+ * The season window, anchored to the current week rather than to fixed dates.
+ *
+ * Hard-coded dates rot. A demo seeded with a season that finished months ago has
+ * every game in the past, so every "next game" panel is empty and the app looks
+ * broken when it is working perfectly. Anchoring to today keeps results behind the
+ * season and fixtures ahead of it, which is the state the dashboards are designed
+ * to show.
+ *
+ * This does not weaken idempotent generation: the engine still returns the same
+ * schedule for the same config and seed. It is the config that follows the
+ * calendar, and the seed prints the window it chose so a run is reproducible by
+ * passing those dates back in.
+ */
+const TODAY = date(new Date().toISOString().slice(0, 10))
+const saturdayOnOrAfter = (d: Date) => addDays(d, (6 - d.getUTCDay() + 7) % 7)
+
+/** Five weeks back, so roughly a third of the season has already been played. */
+const SEASON_START = saturdayOnOrAfter(addDays(TODAY, -35))
+/** Fourteen Saturdays, which is the 12-week window acceptance scenario 2 wants. */
+const SEASON_END = addDays(SEASON_START, 7 * 13 + 1)
+/** Offsets from the first Saturday, so blackouts land inside the window. */
+const week = (n: number) => addDays(SEASON_START, n * 7)
+const SEASON_NAME = `${SEASON_START.getUTCMonth() < 6 ? 'Spring' : 'Fall'} ${SEASON_START.getUTCFullYear()}`
 
 const USERS: { email: string; name: string; role: Role }[] = [
   { email: 'owner@riverside.example', name: 'Marta Ibarra', role: 'owner' },
@@ -80,13 +106,36 @@ const LAST_NAMES = [
   'Petrov', 'Quintana', 'Rossi', 'Silva', 'Tanaka', 'Ueda', 'Vargas', 'Whitlock',
 ]
 
+/**
+ * The officiating pool.
+ *
+ * Sized so the org can *nearly* cover itself but not quite. 92 games at three
+ * positions each is 276 slots against a pool whose daily caps allow rather fewer, so
+ * the generator leaves real holes — which is the state the assignment board and the
+ * referee's "games needing an official" list exist to deal with.
+ *
+ * It has to be big enough that the referee with a login is not maxed out on every
+ * single Saturday, or every spare game on their page reads "you already have an
+ * overlapping assignment" and there is nothing to demonstrate volunteering with.
+ * Six was too few for that; ten leaves them genuine gaps.
+ */
 const REFEREES = [
-  { name: 'Wei Chen', level: 'Grade 6', payCents: 5500, maxPerDay: 4, email: 'referee@riverside.example' },
+  // Capped low on purpose. Availability and cap are what the generator fills against,
+  // so the widest-available official ends up booked solid — and with slots 75 minutes
+  // apart, 60-minute games and a 30-minute travel buffer, a referee who already has a
+  // game in an adjacent slot at the other venue cannot take anything. That left the
+  // demo login unable to volunteer for a single spare game. Two a day keeps them
+  // genuinely free some afternoons.
+  { name: 'Wei Chen', level: 'Grade 7', payCents: 4500, maxPerDay: 2, email: 'referee@riverside.example' },
   { name: 'Sofia Marchetti', level: 'Grade 7', payCents: 4500, maxPerDay: 3 },
   { name: 'Andre Boateng', level: 'Grade 7', payCents: 4500, maxPerDay: 3 },
   { name: 'Hannah Lindqvist', level: 'Grade 8', payCents: 3500, maxPerDay: 2 },
   { name: 'Diego Salas', level: 'Grade 8', payCents: 3500, maxPerDay: 2 },
   { name: 'Priya Kulkarni', level: 'Grade 6', payCents: 5500, maxPerDay: 4 },
+  { name: 'Mara Oyelaran', level: 'Grade 7', payCents: 4500, maxPerDay: 3 },
+  { name: 'Tomas Nyberg', level: 'Grade 8', payCents: 3500, maxPerDay: 3 },
+  { name: 'Grace Lim', level: 'Grade 7', payCents: 4500, maxPerDay: 4 },
+  { name: 'Ivan Petrescu', level: 'Grade 8', payCents: 3500, maxPerDay: 2 },
 ]
 
 async function main() {
@@ -183,8 +232,8 @@ async function main() {
           dayOfWeek: 6,
           startMinute: 8 * 60,
           endMinute: 18 * 60,
-          effectiveFrom: date('2026-03-07'),
-          effectiveTo: date('2026-05-30'),
+          effectiveFrom: SEASON_START,
+          effectiveTo: SEASON_END,
           notes: 'Season Saturdays',
         },
       })
@@ -195,8 +244,8 @@ async function main() {
           dayOfWeek: 0,
           startMinute: 13 * 60,
           endMinute: 17 * 60,
-          effectiveFrom: date('2026-03-07'),
-          effectiveTo: date('2026-05-30'),
+          effectiveFrom: SEASON_START,
+          effectiveTo: SEASON_END,
           notes: 'Makeup window',
         },
       })
@@ -228,23 +277,22 @@ async function main() {
   const season = await prisma.season.create({
     data: {
       leagueId: recLeague.id,
-      name: 'Spring 2026',
-      // 12 Saturdays: Mar 7 through May 23, ending May 30.
-      startDate: date('2026-03-07'),
-      endDate: date('2026-05-30'),
+      name: SEASON_NAME,
+      startDate: SEASON_START,
+      endDate: SEASON_END,
       status: 'active',
     },
   })
   await prisma.season.create({
     data: {
       leagueId: compLeague.id,
-      name: 'Spring 2026',
-      startDate: date('2026-03-07'),
-      endDate: date('2026-05-30'),
+      name: SEASON_NAME,
+      startDate: SEASON_START,
+      endDate: SEASON_END,
       status: 'draft',
     },
   })
-  await audit('Season', season.id, 'season.created', { name: { before: null, after: 'Spring 2026' } })
+  await audit('Season', season.id, 'season.created', { name: { before: null, after: SEASON_NAME } })
 
   const u12 = await prisma.division.create({
     data: {
@@ -317,7 +365,7 @@ async function main() {
     if (!linkedCoach && team.divisionId === u12.id) linkedCoach = true
 
     await prisma.teamMembership.create({
-      data: { teamId: team.id, personId: coach.id, role: 'coach', activeFrom: date('2026-02-01') },
+      data: { teamId: team.id, personId: coach.id, role: 'coach', activeFrom: addDays(SEASON_START, -30) },
     })
 
     const manager = await prisma.person.create({
@@ -342,7 +390,7 @@ async function main() {
           personId: player.id,
           role: 'player',
           jerseyNumber: String(jersey),
-          activeFrom: date('2026-02-01'),
+          activeFrom: addDays(SEASON_START, -30),
         },
       })
     }
@@ -396,19 +444,41 @@ async function main() {
       },
     })
 
-    // Saturdays, with the pool split across morning and afternoon.
+    // Saturdays, with the pool split across morning and afternoon so the engine
+    // faces a genuinely constrained set of officials.
+    //
+    // The one exception is the referee who has a demo login: they get the whole day.
+    // With a half-day window, every unstaffed afternoon game on their own page reads
+    // "outside your availability" and there is nothing left to demonstrate asking for
+    // a game with. The constrained pool is still constrained — five of the six.
+    const wholeDay = spec.email !== undefined
     const morning = random() < 0.5
     await prisma.refereeAvailability.create({
       data: {
         refereeId: referee.id,
         kind: 'weekly',
         dayOfWeek: 6,
-        startMinute: morning ? 8 * 60 : 12 * 60,
-        endMinute: morning ? 14 * 60 : 18 * 60,
-        effectiveFrom: date('2026-03-07'),
-        effectiveTo: date('2026-05-30'),
+        startMinute: wholeDay ? 8 * 60 : morning ? 8 * 60 : 12 * 60,
+        endMinute: wholeDay ? 18 * 60 : morning ? 14 * 60 : 18 * 60,
+        effectiveFrom: SEASON_START,
+        effectiveTo: SEASON_END,
       },
     })
+    // Sunday makeups too, for the same reason: the makeup window is where spare
+    // games tend to sit.
+    if (wholeDay) {
+      await prisma.refereeAvailability.create({
+        data: {
+          refereeId: referee.id,
+          kind: 'weekly',
+          dayOfWeek: 0,
+          startMinute: 13 * 60,
+          endMinute: 17 * 60,
+          effectiveFrom: SEASON_START,
+          effectiveTo: SEASON_END,
+        },
+      })
+    }
     await audit('Referee', referee.id, 'referee.created', {
       certificationLevel: { before: null, after: spec.level },
     })
@@ -418,17 +488,17 @@ async function main() {
   const busy = await prisma.referee.findFirstOrThrow({
     where: { person: { name: 'Hannah Lindqvist', orgId: org.id } },
   })
-  for (const [from, to, reason] of [
-    ['2026-03-14', '2026-03-28', 'Out of state'],
-    ['2026-04-11', '2026-04-11', 'Wedding'],
-    ['2026-05-02', '2026-05-16', 'Exams'],
+  for (const [fromWeek, toWeek, reason] of [
+    [1, 3, 'Out of state'],
+    [5, 5, 'Wedding'],
+    [8, 10, 'Exams'],
   ] as const) {
     await prisma.refereeAvailability.create({
       data: {
         refereeId: busy.id,
         kind: 'blackout',
-        effectiveFrom: date(from),
-        effectiveTo: date(to),
+        effectiveFrom: week(fromWeek),
+        effectiveTo: week(toWeek),
         reason,
       },
     })
@@ -436,27 +506,30 @@ async function main() {
 
   // --- blackout dates ---------------------------------------------------------
 
+  // Week offsets rather than calendar dates, so each one still falls inside the
+  // season and still blocks the Saturday it is meant to block. The reasons are
+  // illustrative — the point is that all four scopes are exercised.
   const blackouts = [
-    { scope: 'org' as const, start: '2026-04-05', end: '2026-04-05', reason: 'Easter Sunday' },
-    { scope: 'org' as const, start: '2026-05-25', end: '2026-05-25', reason: 'Memorial Day' },
+    { scope: 'org' as const, from: 4, to: 4, reason: 'League-wide rest weekend' },
+    { scope: 'org' as const, from: 11, to: 11, reason: 'Public holiday' },
     {
       scope: 'venue' as const,
-      start: '2026-04-18',
-      end: '2026-04-19',
+      from: 6,
+      to: 6,
       reason: 'Field maintenance and reseeding',
       venueId: riverside.id,
     },
     {
       scope: 'division' as const,
-      start: '2026-05-09',
-      end: '2026-05-09',
+      from: 9,
+      to: 9,
       reason: 'U12 regional tournament',
       divisionId: u12.id,
     },
     {
       scope: 'team' as const,
-      start: '2026-03-21',
-      end: '2026-03-21',
+      from: 2,
+      to: 2,
       reason: 'Team travelling to a friendly',
       teamId: owls.id,
     },
@@ -469,8 +542,8 @@ async function main() {
         divisionId: 'divisionId' in b ? b.divisionId : null,
         teamId: 'teamId' in b ? b.teamId : null,
         venueId: 'venueId' in b ? b.venueId : null,
-        startDate: date(b.start),
-        endDate: date(b.end),
+        startDate: week(b.from),
+        endDate: week(b.to),
         reason: b.reason,
       },
     })
@@ -520,7 +593,12 @@ async function main() {
       `${counts.referees} officials · ${counts.venues} venues / ${counts.fields} fields · ` +
       `${counts.blackouts} blackouts`,
   )
-  console.log(`\n  U12 Boys has 9 teams; Saturdays 8am-6pm local, Mar 7 - May 30 2026.`)
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  console.log(
+    `\n  ${SEASON_NAME}: ${iso(SEASON_START)} → ${iso(SEASON_END)} (anchored to today, so the` +
+      ` season is part-played).`,
+  )
+  console.log(`  U12 Boys has 9 teams; Saturdays 8am-6pm local, Sundays 1-5pm for makeups.`)
   console.log(`\n  Sign in with any of these — password: ${PASSWORD}`)
   for (const u of USERS) console.log(`    ${u.role.padEnd(10)} ${u.email}`)
   console.log(`\n  Pending invite:\n    ${base}/accept-invite?token=${inviteToken}\n`)

@@ -147,6 +147,22 @@ export async function assertGameOfficialInOrg(orgId: string, assignmentId: strin
   return assignment
 }
 
+export async function assertOfficiatingRequestInOrg(orgId: string, requestId: string) {
+  const request = await prisma.officiatingRequest.findFirst({
+    where: {
+      id: requestId,
+      deletedAt: null,
+      game: { deletedAt: null, season: { deletedAt: null, league: { orgId, deletedAt: null } } },
+    },
+    include: {
+      game: { include: { homeTeam: true, awayTeam: true, field: { include: { venue: true } } } },
+      referee: { include: { person: true } },
+    },
+  })
+  if (!request) throw notFound('Request not found.')
+  return request
+}
+
 export async function assertBlackoutInOrg(orgId: string, blackoutId: string) {
   const blackout = await prisma.blackoutDate.findFirst({
     where: { id: blackoutId, orgId, deletedAt: null },
@@ -184,6 +200,45 @@ export async function staffTeamIds(userId: string, orgId: string): Promise<strin
     select: { teamId: true },
   })
   return [...new Set(memberships.map((m) => m.teamId))]
+}
+
+/**
+ * The same teams as `staffTeamIds`, with enough to label a link.
+ *
+ * Separate from `staffTeamIds` rather than replacing it: the authorization checks
+ * want a cheap id list and should not pull names they will never read.
+ */
+export async function staffTeams(
+  userId: string,
+  orgId: string,
+): Promise<Array<{ id: string; name: string; divisionName: string }>> {
+  const memberships = await prisma.teamMembership.findMany({
+    where: {
+      deletedAt: null,
+      role: { in: [...STAFF_ROLES] },
+      person: { userId, orgId, deletedAt: null },
+      team: {
+        deletedAt: null,
+        division: { deletedAt: null, season: { deletedAt: null, league: { orgId, deletedAt: null } } },
+      },
+    },
+    select: {
+      team: { select: { id: true, name: true, division: { select: { name: true } } } },
+    },
+    orderBy: { team: { name: 'asc' } },
+  })
+
+  const byId = new Map(
+    memberships.map((membership) => [
+      membership.team.id,
+      {
+        id: membership.team.id,
+        name: membership.team.name,
+        divisionName: membership.team.division.name,
+      },
+    ]),
+  )
+  return [...byId.values()]
 }
 
 /** The Referee record belonging to the signed-in user in this org, if any. */
@@ -248,6 +303,62 @@ export async function requireAvailabilityWrite(
   }
 
   throw forbidden('You do not have permission to set availability.')
+}
+
+/**
+ * Authorizes creating an officiating request, and resolves *whose* it is.
+ *
+ * The referee is resolved from the session, never from the request body. There is
+ * deliberately no `refereeId` field on the create schema: if there were, a referee
+ * could volunteer somebody else for a game, and a compromised session could be
+ * used to manufacture assignments for a third party. The only referee a caller can
+ * request for is the one their own login resolves to.
+ *
+ * A member with no linked Referee record is refused rather than silently ignored,
+ * because "you are not registered as an official" is the actionable answer.
+ */
+export async function requireOwnRefereeRequest(
+  req: Request,
+  orgId: string,
+): Promise<{
+  actor: Actor
+  role: Role
+  referee: { id: string; personId: string; name: string }
+}> {
+  const { actor, role } = await requirePermission(req, orgId, 'official:request:own')
+  const referee = await refereeForUser(actor.userId, orgId)
+  if (!referee) {
+    throw forbidden('You are not registered as an official in this organization.')
+  }
+  return {
+    actor,
+    role,
+    referee: { id: referee.id, personId: referee.personId, name: referee.person.name },
+  }
+}
+
+/**
+ * Authorizes withdrawing a request. A referee may withdraw their own; an assigner
+ * may retract anyone's — which is distinct from rejecting one, and audited
+ * separately.
+ */
+export async function requireOfficiatingRequestWithdraw(
+  req: Request,
+  orgId: string,
+  requestId: string,
+): Promise<{ actor: Actor; role: Role; scoped: boolean }> {
+  const { actor, role } = await requirePermission(req, orgId, 'org:read')
+  const request = await assertOfficiatingRequestInOrg(orgId, requestId)
+
+  if (can(role, 'official:request:review')) return { actor, role, scoped: false }
+
+  if (can(role, 'official:request:own')) {
+    const own = await refereeForUser(actor.userId, orgId)
+    if (own?.id === request.refereeId) return { actor, role, scoped: true }
+    throw forbidden('You can only withdraw your own requests.')
+  }
+
+  throw forbidden('You do not have permission to change officiating requests.')
 }
 
 /**

@@ -632,11 +632,15 @@ describe('notifications', () => {
     const res = await prefs(owner)
     expect(res.status).toBe(200)
     expect(res.body.explicit).toBe(false)
+    // Spelled out rather than compared against NOTIFICATION_DEFAULTS on purpose:
+    // this asserts the wire contract, so adding a kind should fail here and make
+    // somebody confirm the new default is the one they meant to ship.
     expect(res.body.preferences).toEqual({
       schedulePublished: true,
       gameRescheduled: true,
       assignmentChanged: true,
       rosterChanged: false,
+      officiatingRequest: true,
     })
     // Reading must not create a row, or the defaults could never change later.
     expect(await prisma.notificationPreference.count()).toBe(0)
