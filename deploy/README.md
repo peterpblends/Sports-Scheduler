@@ -24,6 +24,23 @@ check-then-insert race — which is the defect they were added to fix.
 
 So: PostgreSQL is not a preference here. Choose a path that has it.
 
+## Determination for this account: Ecosite Pro
+
+Ecosite Pro is a GreenGeeks **shared** cPanel plan. Shared plans provide
+MySQL/MariaDB; PostgreSQL is not part of that product, and no cPanel setting adds it.
+
+Confirm it yourself in about ten seconds — log into cPanel and look under **Databases**:
+
+* `MySQL® Databases` and `phpMyAdmin` present, and **no** `PostgreSQL Databases`
+  → shared plan as expected, and this app cannot run here as built.
+* Under **Software**, `Setup Node.js App` may or may not be present. It does not
+  matter either way: even with Node available there is no Postgres for it to talk to.
+
+So Path A below is the one that fits this plan. It keeps the domain exactly where it
+is — you carry on paying GreenGeeks for zicaworld.com and its DNS — and puts only the
+application somewhere that has a database it can use. `sports.zicaworld.com` is the
+address either way; which machine answers it is a DNS record, not a hosting plan.
+
 ## Path A — run the app anywhere that does Postgres, point the domain at it
 
 **Recommended.** The subdomain is DNS; it does not require the app to live on
