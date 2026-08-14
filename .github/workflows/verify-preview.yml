@@ -152,6 +152,74 @@ jobs:
             echo "" >> report.md
             events=$(node -e 'const a=require("./activity.json");const l=a.events??a.activity??a.items??[];console.log(Array.isArray(l)?l.length:0)' 2>/dev/null || echo 0)
             echo "Audit trail visible to the owner: **$events events** on the first page." >> report.md
+
+            # --- the role-shaped pages, and officiating requests ----------------
+            echo "" >> report.md
+            echo '### What each role is served' >> report.md
+            echo "" >> report.md
+            echo '| | Check | Expected | Got |' >> report.md
+            echo '|---|---|---|---|' >> report.md
+
+            slug=$(node -e 'process.stdout.write(require("./orgs.json").orgs?.[0]?.orgSlug ?? "")' 2>/dev/null || true)
+
+            record "referee opens /app/$slug/officiating" 200 \
+              "$(get "$base/app/$slug/officiating" ref-officiating.html "${jars[referee]}")"
+            record "coach dashboard" 200 "$(get "$base/app/$slug" coach-dash.html "${jars[coach]}")"
+            record "viewer dashboard" 200 "$(get "$base/app/$slug" viewer-dash.html "${jars[viewer]}")"
+
+            # A 200 proves routing, not that the role got *their* page. These strings
+            # only appear on the role-specific view.
+            for probe in \
+              "ref-officiating.html:Games needing an official:the referee board renders its open-games section" \
+              "coach-dash.html:Your next game:the coach dashboard leads with their next fixture" \
+              "coach-dash.html:My team:the coach nav links straight to their own team" \
+              "viewer-dash.html:Coming up:the viewer dashboard leads with what is on"
+            do
+              file=${probe%%:*}
+              rest=${probe#*:}
+              needle=${rest%%:*}
+              label=${rest#*:}
+              if grep -qF "$needle" "$file" 2>/dev/null; then
+                echo "| ✅ | $label | present | present |" >> report.md; pass=$((pass+1))
+              else
+                echo "| ❌ | $label | present | missing |" >> report.md; fail=$((fail+1))
+              fi
+            done
+
+            asks=$(grep -oF 'Ask for this game' ref-officiating.html | wc -l)
+            echo "" >> report.md
+            echo "Games the referee may actually request: **$asks**." >> report.md
+            if [ "$asks" -gt 0 ]; then
+              pass=$((pass+1))
+              echo "✅ The request flow has something to act on." >> report.md
+            else
+              fail=$((fail+1))
+              echo "❌ Every open game is blocked for this referee, so nothing can be requested." >> report.md
+              echo "This is what \`npm run demo:openings\` exists to prevent." >> report.md
+            fi
+
+            # A referee volunteering is allowed; a coach or viewer doing it is not.
+            # Checked against a real game id so the 403 comes from the permission
+            # check rather than from a 404 on a bad path.
+            # No seasonId needed: the owner holds `schedule:read`, so this endpoint
+            # serves them live rows rather than demanding a published snapshot.
+            get "$base/api/orgs/$org/games" games.json "${jars[owner]}" >/dev/null
+            gameId=$(node -e 'process.stdout.write(require("./games.json").games?.[0]?.id ?? "")' 2>/dev/null || true)
+
+            if [ -n "$gameId" ]; then
+              echo "" >> report.md
+              echo '| | Check | Expected | Got |' >> report.md
+              echo '|---|---|---|---|' >> report.md
+              record "coach asks to officiate" 403 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null "${jars[coach]}")"
+              record "viewer asks to officiate" 403 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null "${jars[viewer]}")"
+              record "anonymous asks to officiate" 401 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null)"
+            else
+              echo "" >> report.md
+              echo "No game id available; the officiating-request refusals were not checked." >> report.md
+            fi
           fi
 
           echo "pass=$pass" >> "$GITHUB_OUTPUT"
