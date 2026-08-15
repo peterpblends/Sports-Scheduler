@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client'
 
 export type FieldDiff = Record<string, { before: unknown; after: unknown }>
 
-type AuditInput = {
+export type AuditInput = {
   orgId?: string | null
   actorId?: string | null
   actorLabel: string
@@ -72,4 +72,28 @@ function sameValue(a: unknown, b: unknown): boolean {
     return JSON.stringify(na) === JSON.stringify(nb)
   }
   return false
+}
+
+/**
+ * Bulk append. Generating a season creates hundreds of games, and the spec asks for an
+ * audit event per entity mutation — one insert rather than hundreds keeps that
+ * affordable without weakening the guarantee.
+ */
+export async function recordAuditMany(
+  events: AuditInput[],
+  tx: Prisma.TransactionClient = prisma,
+): Promise<void> {
+  if (events.length === 0) return
+  await tx.auditEvent.createMany({
+    data: events.map((input) => ({
+      orgId: input.orgId ?? null,
+      actorId: input.actorId ?? null,
+      actorLabel: input.actorLabel,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      action: input.action,
+      diff: (input.diff ?? {}) as Prisma.InputJsonValue,
+      meta: (input.meta ?? {}) as Prisma.InputJsonValue,
+    })),
+  })
 }

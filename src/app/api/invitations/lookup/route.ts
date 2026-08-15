@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
-import { badRequest, handler, notFound } from '@/lib/http'
+import { badRequest, clientIp, handler, notFound } from '@/lib/http'
+import { AUTH_LIMITS, enforceRateLimit } from '@/lib/rate-limit'
 import { hashToken } from '@/lib/tokens'
 
 /**
@@ -8,6 +9,15 @@ import { hashToken } from '@/lib/tokens'
  * to choose a password). Deliberately returns nothing about the org otherwise.
  */
 export const GET = handler(async (req) => {
+  // Token-guessing surface. The tokens are 256-bit, so guessing is not the real
+  // risk — unbounded work and unbounded audit noise are.
+  enforceRateLimit({
+    bucket: 'invitation-lookup',
+    ip: clientIp(req),
+    ...AUTH_LIMITS.tokenSubmission,
+    message: 'Too many attempts. Try again shortly.',
+  })
+
   const token = new URL(req.url).searchParams.get('token')
   if (!token) throw badRequest('Missing token.')
 

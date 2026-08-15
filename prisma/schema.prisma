@@ -7,6 +7,16 @@
 //    `deletedAt: null`; nothing in this app issues a hard DELETE except for
 //    single-use tokens.
 //  * `AuditEvent` rows are append-only. Nothing updates or deletes them.
+//  * Recurring windows (field time slots, referee availability) are NOT stored as
+//    instants. A weekly "Saturdays 8am-6pm" must keep meaning 8am local across a
+//    DST boundary, so they are stored as day-of-week + minutes-from-midnight in
+//    the relevant venue's / person's local zone, plus an effective date range.
+//    Only concrete occurrences — `Game.startTime` — are absolute UTC instants.
+//  * Money is stored as integer cents. No floats, no Decimal serialization traps.
+//  * Uniqueness on soft-deletable names (team name within a division, and so on)
+//    is enforced in the application layer scoped to `deletedAt: null`, not by a
+//    database constraint: a unique index would refuse to let a name be reused
+//    after the original row was soft-deleted. See `assertNameAvailable`.
 
 generator client {
   provider = "prisma-client-js"
@@ -42,11 +52,16 @@ model User {
   // Set when the user's credentials change, invalidating every issued session.
   sessionsValidFrom DateTime @default(now()) @db.Timestamptz(3)
 
-  memberships        Membership[]
-  sessions           Session[]
-  passwordResets     PasswordResetToken[]
-  invitationsCreated Invitation[]         @relation("InvitationCreatedBy")
-  auditEvents        AuditEvent[]
+  memberships          Membership[]
+  sessions             Session[]
+  passwordResets       PasswordResetToken[]
+  invitationsCreated   Invitation[]             @relation("InvitationCreatedBy")
+  auditEvents          AuditEvent[]
+  person               Person?
+  scheduleVersions     ScheduleVersion[]        @relation("VersionAuthor")
+  calendarFeeds        CalendarFeed[]
+  notificationPrefs    NotificationPreference[]
+  officiatingDecisions OfficiatingRequest[]     @relation("OfficiatingRequestDecidedBy")
 
   @@index([deletedAt])
 }
@@ -94,17 +109,23 @@ model Organization {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  memberships Membership[]
-  invitations Invitation[]
-  auditEvents AuditEvent[]
+  memberships       Membership[]
+  invitations       Invitation[]
+  auditEvents       AuditEvent[]
+  leagues           League[]
+  people            Person[]
+  venues            Venue[]
+  blackouts         BlackoutDate[]
+  calendarFeeds     CalendarFeed[]
+  notificationPrefs NotificationPreference[]
 
   @@index([deletedAt])
 }
 
 model Membership {
-  id     String @id @default(cuid())
+  id     String       @id @default(cuid())
   userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   orgId  String
   org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   role   Role
@@ -121,18 +142,18 @@ model Membership {
 }
 
 model Invitation {
-  id          String    @id @default(cuid())
+  id          String       @id @default(cuid())
   orgId       String
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   email       String
   role        Role
-  tokenHash   String    @unique
+  tokenHash   String       @unique
   createdById String
-  createdBy   User      @relation("InvitationCreatedBy", fields: [createdById], references: [id])
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
-  expiresAt   DateTime  @db.Timestamptz(3)
-  acceptedAt  DateTime? @db.Timestamptz(3)
-  revokedAt   DateTime? @db.Timestamptz(3)
+  createdBy   User         @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  expiresAt   DateTime     @db.Timestamptz(3)
+  acceptedAt  DateTime?    @db.Timestamptz(3)
+  revokedAt   DateTime?    @db.Timestamptz(3)
 
   @@index([orgId])
   @@index([email])
@@ -143,22 +164,703 @@ model Invitation {
 // ---------------------------------------------------------------------------
 
 model AuditEvent {
-  id         String   @id @default(cuid())
+  id         String        @id @default(cuid())
   orgId      String?
   org        Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
   actorId    String?
-  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actor      User?         @relation(fields: [actorId], references: [id], onDelete: SetNull)
   actorLabel String
   entityType String
   entityId   String
   action     String
   // Field-level before/after diff: { field: { before, after } }
-  diff       Json     @default("{}")
+  diff       Json          @default("{}")
   // Free-form context (ip, user agent, override reason, version id, ...).
-  meta       Json     @default("{}")
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  meta       Json          @default("{}")
+  createdAt  DateTime      @default(now()) @db.Timestamptz(3)
 
   @@index([orgId, createdAt])
   @@index([entityType, entityId, createdAt])
   @@index([actorId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Structure: league -> season -> division -> team
+// ---------------------------------------------------------------------------
+
+enum SeasonStatus {
+  draft
+  active
+  archived
+}
+
+model League {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  // Sport-agnostic: free text rather than an enum, so a new sport needs no migration.
+  sport       String       @default("soccer")
+  description String?
+  /// A link to an already-hosted image, not an upload — same choice `Team.logoUrl`
+  /// already made. Public: shown on the anonymous published-schedule page.
+  logoUrl     String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime?    @db.Timestamptz(3)
+
+  seasons Season[]
+
+  @@index([orgId, deletedAt])
+}
+
+model Season {
+  id        String       @id @default(cuid())
+  leagueId  String
+  league    League       @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  name      String
+  // Calendar dates, not instants: a season runs "Mar 1 - Jun 15" regardless of zone.
+  startDate DateTime     @db.Date
+  endDate   DateTime     @db.Date
+  status    SeasonStatus @default(draft)
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime?    @db.Timestamptz(3)
+
+  divisions     Division[]
+  games         Game[]
+  versions      ScheduleVersion[] @relation("SeasonVersions")
+  calendarFeeds CalendarFeed[]
+
+  /// The single version low-privilege roles and the public are shown. Null until
+  /// something is published.
+  publishedVersionId String?          @unique
+  publishedVersion   ScheduleVersion? @relation("SeasonPublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
+
+  @@index([leagueId, deletedAt])
+}
+
+model Division {
+  id          String    @id @default(cuid())
+  seasonId    String
+  season      Season    @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime? @db.Timestamptz(3)
+
+  teams     Team[]
+  games     Game[]
+  blackouts BlackoutDate[]
+
+  @@index([seasonId, deletedAt])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  name       String
+
+  primaryColor   String?
+  secondaryColor String?
+  logoUrl        String?
+
+  // Preference, not a guarantee — the scheduler treats it as a soft constraint.
+  preferredVenueId String?
+  preferredVenue   Venue?  @relation(fields: [preferredVenueId], references: [id], onDelete: SetNull)
+
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  memberships   TeamMembership[]
+  homeGames     Game[]           @relation("HomeTeam")
+  awayGames     Game[]           @relation("AwayTeam")
+  blackouts     BlackoutDate[]
+  calendarFeeds CalendarFeed[]
+
+  @@index([divisionId, deletedAt])
+  @@index([preferredVenueId])
+}
+
+// ---------------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------------
+
+enum TeamRole {
+  player
+  coach
+  assistant
+  manager
+}
+
+enum RelationshipKind {
+  family
+  guardian
+  other
+}
+
+/// One person record per human, reused across every role they hold.
+model Person {
+  id    String       @id @default(cuid())
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  name  String
+  email String?
+  phone String?
+  // Date of birth is a calendar date; it must not shift by zone.
+  dob   DateTime? @db.Date
+  notes String?
+
+  /// A link to an already-hosted image, not an upload. Deliberately never rendered
+  /// on the anonymous public schedule page — that page already withholds officials
+  /// and contact details, and a person's photo (rosters here include minors) is at
+  /// least as sensitive. Shown only on pages already gated by `roster:read`.
+  photoUrl String?
+
+  /// Links this person to a login, so a coach's or referee's own-scope
+  /// permissions can be resolved from their session.
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Set when this person has a declared conflict of interest — a relative on a
+  /// team, say. The scheduler refuses officiating assignments that touch it.
+  hasConflictOfInterest Boolean @default(false)
+  conflictNote          String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  teamMemberships TeamMembership[]
+  referee         Referee?
+  relationships   PersonRelationship[] @relation("RelationshipFrom")
+  relatedTo       PersonRelationship[] @relation("RelationshipTo")
+
+  @@index([orgId, deletedAt])
+  @@index([orgId, email])
+}
+
+/// Family links between people. Drives two scheduling rules: never assign an
+/// official to a game involving a relative, and keep siblings' games close
+/// together. Stored one row per direction by the API so lookups stay simple.
+model PersonRelationship {
+  id              String           @id @default(cuid())
+  personId        String
+  person          Person           @relation("RelationshipFrom", fields: [personId], references: [id], onDelete: Cascade)
+  relatedPersonId String
+  relatedPerson   Person           @relation("RelationshipTo", fields: [relatedPersonId], references: [id], onDelete: Cascade)
+  kind            RelationshipKind @default(family)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  deletedAt       DateTime?        @db.Timestamptz(3)
+
+  @@unique([personId, relatedPersonId, kind])
+  @@index([relatedPersonId])
+}
+
+model TeamMembership {
+  id       String   @id @default(cuid())
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  personId String
+  person   Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  role     TeamRole @default(player)
+
+  jerseyNumber String?
+  // Active date range. `activeTo` null means "still active".
+  activeFrom   DateTime? @db.Date
+  activeTo     DateTime? @db.Date
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([teamId, deletedAt])
+  @@index([personId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Officials
+// ---------------------------------------------------------------------------
+
+enum AvailabilityKind {
+  /// Recurring weekly window the referee is available, in their local zone.
+  weekly
+  /// One-off date range the referee is unavailable. Overrides `weekly`.
+  blackout
+}
+
+/// A Person flagged as an official.
+model Referee {
+  id       String @id @default(cuid())
+  personId String @unique
+  person   Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  certificationLevel  String?
+  /// Integer cents per game.
+  payRateCents        Int?
+  maxGamesPerDay      Int     @default(3)
+  /// Minutes of travel the scheduler must leave between venues.
+  travelBufferMinutes Int     @default(30)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  preferredVenues     Venue[]               @relation("RefereePreferredVenues")
+  availability        RefereeAvailability[]
+  assignments         GameOfficial[]
+  calendarFeeds       CalendarFeed[]
+  officiatingRequests OfficiatingRequest[]
+
+  @@index([deletedAt])
+}
+
+model RefereeAvailability {
+  id        String           @id @default(cuid())
+  refereeId String
+  referee   Referee          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  kind      AvailabilityKind
+
+  // kind = weekly: local-time window, repeating. 0 = Sunday.
+  dayOfWeek   Int?
+  startMinute Int?
+  endMinute   Int?
+
+  // Date range over which this row applies. For `blackout` both are required and
+  // describe the unavailable days inclusively.
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  reason String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([refereeId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Places
+// ---------------------------------------------------------------------------
+
+model Venue {
+  id       String       @id @default(cuid())
+  orgId    String
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name     String
+  address  String?
+  /// IANA zone. Every game at this venue renders in this zone.
+  timezone String
+  notes    String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  fields             Field[]
+  preferringTeams    Team[]
+  preferringReferees Referee[]      @relation("RefereePreferredVenues")
+  blackouts          BlackoutDate[]
+
+  @@index([orgId, deletedAt])
+}
+
+/// A playable surface. A venue can have several.
+model Field {
+  id      String  @id @default(cuid())
+  venueId String
+  venue   Venue   @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  name    String
+  notes   String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  timeSlots TimeSlot[]
+  games     Game[]
+
+  @@index([venueId, deletedAt])
+}
+
+/// When a field is available. Recurring windows are local-time (see the header
+/// note on DST); one-off windows pin a single calendar date.
+model TimeSlot {
+  id      String @id @default(cuid())
+  fieldId String
+  field   Field  @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  /// Null for a one-off slot; 0 = Sunday for a recurring one.
+  dayOfWeek     Int?
+  /// Set for a one-off slot only.
+  specificDate  DateTime? @db.Date
+  /// Minutes from local midnight.
+  startMinute   Int
+  endMinute     Int
+  /// Bounds a recurring slot, e.g. Mar 1 - Jun 15.
+  effectiveFrom DateTime? @db.Date
+  effectiveTo   DateTime? @db.Date
+
+  notes String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([fieldId, deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Games
+// ---------------------------------------------------------------------------
+
+enum GameStatus {
+  scheduled
+  confirmed
+  played
+  postponed
+  cancelled
+}
+
+enum OfficialPosition {
+  center
+  AR1
+  AR2
+  scorekeeper
+}
+
+enum AcceptanceStatus {
+  pending
+  accepted
+  declined
+}
+
+model Game {
+  id         String   @id @default(cuid())
+  seasonId   String
+  season     Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  homeTeamId String
+  homeTeam   Team   @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeamId String
+  awayTeam   Team   @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+
+  /// Null while a game is proposed but not yet placed on a field.
+  fieldId String?
+  field   Field?  @relation(fields: [fieldId], references: [id], onDelete: SetNull)
+
+  /// Absolute instant, UTC. Rendered in the field's venue zone.
+  startTime       DateTime   @db.Timestamptz(3)
+  durationMinutes Int        @default(60)
+  status          GameStatus @default(scheduled)
+
+  homeScore   Int?
+  awayScore   Int?
+  roundNumber Int?
+  notes       String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  officials           GameOfficial[]
+  officiatingRequests OfficiatingRequest[]
+
+  @@index([seasonId, startTime])
+  @@index([divisionId, startTime])
+  @@index([fieldId, startTime])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+  @@index([deletedAt])
+}
+
+model GameOfficial {
+  id        String           @id @default(cuid())
+  gameId    String
+  game      Game             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  refereeId String
+  referee   Referee          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  position  OfficialPosition
+  status    AcceptanceStatus @default(pending)
+
+  /// Overrides the referee's default rate for this game, in cents.
+  payRateCentsOverride Int?
+  assignedAt           DateTime  @default(now()) @db.Timestamptz(3)
+  respondedAt          DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([gameId, deletedAt])
+  @@index([refereeId, deletedAt])
+
+  /// Two PARTIAL UNIQUE indexes also guard this table and are NOT declared here,
+  /// because Prisma's schema language cannot express a predicate:
+  ///
+  ///   GameOfficial_game_position_held_key  (gameId, position)
+  ///   GameOfficial_game_referee_held_key   (gameId, refereeId)
+  ///     ... both WHERE "deletedAt" IS NULL AND status <> 'declined'
+  ///
+  /// They live in migrations/20260814200000_officiating_integrity_constraints. The
+  /// `status <> 'declined'` predicate is load-bearing: a declined assignment frees
+  /// the position, so a plain unique index would forbid "the original official
+  /// declined and somebody else took the game". Without them, the assignment
+  /// endpoint's check-then-insert is a race that can seat two centre officials.
+  /// `prisma migrate dev` will report them as drift. Do not resolve that by
+  /// dropping them.
+}
+
+// ---------------------------------------------------------------------------
+// Blackouts
+// ---------------------------------------------------------------------------
+
+enum BlackoutScope {
+  org
+  division
+  team
+  venue
+}
+
+/// Dates nothing may be scheduled on, at one of four scopes. Holidays,
+/// tournaments, field maintenance. A hard constraint for the scheduler.
+model BlackoutDate {
+  id    String        @id @default(cuid())
+  orgId String
+  org   Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scope BlackoutScope
+
+  /// Exactly one of these is set, matching `scope` (none for an org-wide row).
+  divisionId String?
+  division   Division? @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+  teamId     String?
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  venueId    String?
+  venue      Venue?    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  /// Inclusive calendar date range.
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  reason    String
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([orgId, startDate])
+  @@index([divisionId])
+  @@index([teamId])
+  @@index([venueId])
+}
+
+// ---------------------------------------------------------------------------
+// Revision history
+// ---------------------------------------------------------------------------
+
+enum ScheduleVersionStatus {
+  /// Work in progress. Only roles holding `schedule:read` can see it.
+  draft
+  /// The one version coaches, referees and the public are shown.
+  published
+  /// Previously published, superseded by a newer one.
+  archived
+}
+
+/// Where a version came from. Recorded so the history reads as a narrative.
+enum ScheduleVersionSource {
+  generated
+  manual_save
+  restore
+}
+
+/**
+ * An immutable snapshot of a season's games.
+ * Created on every generation and every manual save. Nothing ever updates
+ * `snapshot` — restoring an old version writes a *new* version, so history only
+ * ever grows. Team, venue and official names are denormalized into the snapshot on
+ * purpose: a version has to render the same way in a year's time even if a team is
+ * renamed or a venue is removed.
+ */
+model ScheduleVersion {
+  id       String                @id @default(cuid())
+  seasonId String
+  season   Season                @relation("SeasonVersions", fields: [seasonId], references: [id], onDelete: Cascade)
+  /// Sequential within the season, starting at 1.
+  number   Int
+  label    String
+  note     String?
+  status   ScheduleVersionStatus @default(draft)
+  source   ScheduleVersionSource
+
+  authorId    String?
+  author      User?   @relation("VersionAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  /// Kept alongside authorId so the history still names someone after a user is removed.
+  authorLabel String
+
+  /// The frozen games. See `ScheduleSnapshot` in src/lib/versions/snapshot.ts.
+  ///
+  /// Large: one row per game in the season. Never `include` this model without a
+  /// `select`, or listing a season's versions transfers and parses every historical
+  /// schedule at once. `gameCount` exists so the common case never has to.
+  snapshot Json
+  /// Number of games in `snapshot`, denormalised at write time.
+  ///
+  /// The versions list previously derived this by JSON-parsing every snapshot, which
+  /// made a cheap authenticated GET cost O(versions x games) in both transfer and CPU.
+  /// Safe to denormalise because a snapshot is written once and never updated.
+  gameCount Int @default(0)
+  /// The scheduling config used, when this version came from a generation.
+  config   Json?
+
+  /// Set when `source` is `restore`: the version whose content was brought back.
+  restoredFromId String?
+  restoredFrom   ScheduleVersion?  @relation("RestoreChain", fields: [restoredFromId], references: [id], onDelete: SetNull)
+  restores       ScheduleVersion[] @relation("RestoreChain")
+
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  publishedById String?
+
+  publishedForSeason Season? @relation("SeasonPublishedVersion")
+
+  @@unique([seasonId, number])
+  @@index([seasonId, createdAt])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: subscriptions and notifications
+// ---------------------------------------------------------------------------
+
+enum CalendarFeedScope {
+  org
+  team
+  referee
+}
+
+/**
+ * A live iCal subscription URL.
+ * Calendar clients cannot send a session cookie, so the secret has to travel in the
+ * path. It is stored as a SHA-256 digest for the same reason sessions are: a leaked
+ * table must not hand anyone a working feed. The token is shown once, at creation.
+ * A feed is bound to the user who created it *and* to a scope. Authorization is
+ * re-derived from that user's live role on every fetch, so revoking their membership
+ * kills the feed without anyone having to remember to delete it.
+ */
+model CalendarFeed {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  scope     CalendarFeedScope
+  /// Set when scope is `team`.
+  teamId    String?
+  team      Team?             @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Set when scope is `referee`.
+  refereeId String?
+  referee   Referee?          @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+  /// Optional: pin the feed to one season rather than following the active one.
+  seasonId  String?
+  season    Season?           @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  label     String
+
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  lastAccessedAt DateTime? @db.Timestamptz(3)
+  revokedAt      DateTime? @db.Timestamptz(3)
+
+  @@index([userId, orgId, revokedAt])
+  @@index([orgId, revokedAt])
+}
+
+/**
+ * Per-user, per-org notification settings.
+ * Absent rows mean the defaults below, so nobody has to be back-filled when a new
+ * notification kind is added — a missing row and an untouched row behave the same.
+ */
+model NotificationPreference {
+  id     String       @id @default(cuid())
+  userId String
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  /// A version was published, so the schedule people see has changed.
+  schedulePublished  Boolean @default(true)
+  /// A game the recipient is involved in moved.
+  gameRescheduled    Boolean @default(true)
+  /// An official was offered, reassigned or unassigned from a game.
+  assignmentChanged  Boolean @default(true)
+  /// Somebody joined or left a team the recipient is staff of.
+  rosterChanged      Boolean @default(false)
+  /// A referee asked to officiate a game, or an assigner answered such a request.
+  officiatingRequest Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([userId, orgId])
+}
+
+enum OfficiatingRequestStatus {
+  pending
+  approved
+  rejected
+  withdrawn
+}
+
+/// A referee asking for a game, which is the opposite direction of a GameOfficial.
+///
+/// Deliberately not modelled as a `GameOfficial` with an extra status. A
+/// GameOfficial row means "this referee is on this crew" everywhere in the
+/// codebase — `detectOfficialConflicts` counts any non-declined assignment as
+/// occupying the referee's time and consuming their daily cap. Folding requests
+/// into that table would make merely *asking* for a game block the referee from
+/// being assigned elsewhere, and would let a referee manufacture a conflict for
+/// themselves. So a request is its own row, and turns into a GameOfficial only
+/// when an assigner approves it.
+model OfficiatingRequest {
+  id        String  @id @default(cuid())
+  gameId    String
+  game      Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  refereeId String
+  referee   Referee @relation(fields: [refereeId], references: [id], onDelete: Cascade)
+
+  position OfficialPosition
+  status   OfficiatingRequestStatus @default(pending)
+  /// The referee's message to the assigner.
+  note     String?
+
+  /// Who answered, and what they said. Kept on the row as well as in the audit
+  /// trail so the referee can see the reason without holding `audit:read`.
+  decidedById  String?
+  decidedBy    User?     @relation("OfficiatingRequestDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt    DateTime? @db.Timestamptz(3)
+  decisionNote String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  @@index([refereeId, status, deletedAt])
+  @@index([gameId, deletedAt])
+
+  /// Also guarded by a partial unique index that Prisma cannot declare:
+  ///   OfficiatingRequest_game_referee_pending_key (gameId, refereeId)
+  ///     WHERE "deletedAt" IS NULL AND status = 'pending'
+  /// See the note on GameOfficial.
 }

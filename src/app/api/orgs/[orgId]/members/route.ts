@@ -5,6 +5,7 @@ import { recordAudit } from '@/lib/audit'
 import { generateToken, hashToken } from '@/lib/tokens'
 import { appUrl, mailer } from '@/lib/mailer'
 import { rank } from '@/lib/authz'
+import { AUTH_LIMITS, enforceRateLimit } from '@/lib/rate-limit'
 
 type Ctx = { params: Promise<{ orgId: string }> }
 
@@ -43,6 +44,16 @@ export const POST = handler<Ctx>(async (req, ctx) => {
   const { orgId } = await ctx.params
   const { actor, role: actorRole } = await requirePermission(req, orgId, 'member:invite')
   const { email, role } = await parseBody(req, inviteSchema)
+
+  // Authenticated, but each call sends an email to an address the caller chooses, so
+  // an admin account is still a usable spam relay without a cap. Keyed on the actor
+  // rather than the recipient, since the actor is the one being limited.
+  enforceRateLimit({
+    bucket: 'invitation',
+    identifier: actor.userId,
+    ...AUTH_LIMITS.invitation,
+    message: 'Too many invitations sent. Try again later.',
+  })
 
   // An inviter can never hand out more authority than they hold.
   if (rank(role) > rank(actorRole)) {
@@ -93,7 +104,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
   const link = appUrl(`/accept-invite?token=${encodeURIComponent(token)}`)
   await mailer().send({
     to: email,
-    subject: `${actor.name} invited you to ${org.name} on Sports Scheduler`,
+    subject: `${actor.name} invited you to ${org.name} on THE YARD`,
     text: `${actor.name} (${actor.email}) invited you to join ${org.name} as ${role}.\n\nAccept the invitation here — the link is good for ${INVITE_TTL_DAYS} days:\n\n${link}\n`,
   })
 

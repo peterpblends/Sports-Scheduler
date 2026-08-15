@@ -1,0 +1,100 @@
+name: Deploy
+
+# Runs on GitHub's runners rather than a dev sandbox, which is the point: it has
+# unrestricted outbound access to Vercel and to the hosted database.
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, claude/sport-league-scheduler-3dl6y2]
+  workflow_dispatch:
+
+concurrency:
+  # A second push while a deploy is mid-flight should supersede it, not race it.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the required secrets are set
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          missing=()
+          [ -n "$VERCEL_TOKEN" ] || missing+=(VERCEL_TOKEN)
+          [ -n "$DATABASE_URL" ] || missing+=(DATABASE_URL)
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            echo "Add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Apply migrations
+        # Before the deploy, not during the build: a build that runs twice must not
+        # race itself against the schema.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx prisma migrate deploy
+
+      - name: Deploy to Vercel
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          npm i -g vercel@latest
+
+          # Link non-interactively. With ORG/PROJECT ids set, `pull` adopts the
+          # existing project; without them, `--yes` creates one from this repo.
+          if [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          else
+            vercel link --yes --token="$VERCEL_TOKEN"
+            vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          fi
+
+          # The app needs its own env vars at runtime, not just at build time.
+          # `|| true` because re-adding an existing var is not a failure.
+          printf '%s' "${{ secrets.DATABASE_URL }}" \
+            | vercel env add DATABASE_URL production --force --token="$VERCEL_TOKEN" || true
+          printf '%s' 'console' \
+            | vercel env add MAIL_TRANSPORT production --force --token="$VERCEL_TOKEN" || true
+
+          vercel build --prod --token="$VERCEL_TOKEN"
+          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for it to answer
+        run: |
+          url="${{ steps.deploy.outputs.url }}"
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo 000)
+            echo "attempt $i: $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "::error::$url did not return 200"
+          exit 1

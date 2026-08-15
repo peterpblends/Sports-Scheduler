@@ -1,0 +1,38 @@
+name: Seed demo data
+
+# Deliberately manual and deliberately not part of Deploy. Seeding is a data
+# write; it should never be a side effect of shipping code.
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "seed" to confirm writing demo data to the production database'
+        required: true
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the confirmation
+        run: |
+          [ "${{ inputs.confirm }}" = "seed" ] || {
+            echo '::error::Type "seed" to confirm.'; exit 1;
+          }
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Seed
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run seed

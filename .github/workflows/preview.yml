@@ -1,0 +1,402 @@
+name: Preview
+
+# Runs the real application inside the runner and exposes it on a public HTTPS
+# URL through a Cloudflare quick tunnel. Requires no credentials of any kind:
+# quick tunnels are anonymous, and Postgres is a service container.
+#
+# This is a preview, not a deployment. The URL changes on every run and the run
+# ends when its clock runs out. For a permanent URL see DEPLOYMENT.md.
+
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Minutes to keep the preview up (max 330)'
+        required: false
+        default: '330'
+      seed:
+        description: 'Load the demo league before starting'
+        type: boolean
+        required: false
+        default: true
+
+# A second preview replaces the first rather than racing it. Two tunnels to two
+# apps on the same port is not a state worth debugging.
+concurrency:
+  group: preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: scheduler
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/scheduler?schema=public
+      MAIL_TRANSPORT: console
+      MAIL_FROM: no-reply@example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed the demo league
+        if: inputs.seed
+        run: npm run seed
+
+      # Built before the tunnel opens, so the URL is not sitting idle and
+      # visibly broken for the two minutes a Next build takes.
+      - name: Build
+        run: npm run build
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb || sudo apt-get -f install -y
+          cloudflared --version
+
+      - name: Open the tunnel
+        id: tunnel
+        run: |
+          set -euo pipefail
+
+          # Two attempts: quick tunnels are a free anonymous service and do
+          # occasionally refuse to mint a hostname.
+          for attempt in 1 2; do
+            rm -f tunnel.log
+            nohup cloudflared tunnel --no-autoupdate \
+              --url http://localhost:3000 \
+              --logfile tunnel.log > cloudflared.out 2>&1 &
+            pid=$!
+            echo "tunnel_pid=$pid" >> "$GITHUB_ENV"
+
+            for _ in $(seq 1 40); do
+              url=$(grep -hoE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log cloudflared.out 2>/dev/null | head -1 || true)
+              if [ -n "$url" ]; then
+                echo "url=$url" >> "$GITHUB_OUTPUT"
+                echo "Tunnel hostname: $url"
+                exit 0
+              fi
+              sleep 3
+            done
+
+            echo "Attempt $attempt produced no hostname in 120s."
+            cat tunnel.log cloudflared.out 2>/dev/null | tail -40 || true
+            kill "$pid" 2>/dev/null || true
+          done
+
+          echo "::error title=Tunnel failed::cloudflared did not return a hostname. Re-run the workflow."
+          exit 1
+
+      - name: Start the app
+        env:
+          # The app builds absolute links (invitations, password resets, the
+          # calendar-feed URL) from APP_URL. Pointing it at the tunnel is what
+          # makes those links work from a phone rather than resolving to the
+          # runner's own localhost.
+          APP_URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          set -euo pipefail
+          nohup npm start > app.log 2>&1 &
+          echo "app_pid=$!" >> "$GITHUB_ENV"
+
+          for _ in $(seq 1 60); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:3000/ || echo 000)
+            case "$code" in
+              2*|3*) echo "App answered $code locally."; exit 0 ;;
+            esac
+            sleep 2
+          done
+
+          echo "::error title=App did not start::"
+          tail -60 app.log
+          exit 1
+
+      - name: Verify it answers through the tunnel
+        env:
+          URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          set -euo pipefail
+          # A tunnel that resolves locally but 502s publicly is the failure mode
+          # worth catching here, before the URL is handed to anyone.
+          for _ in $(seq 1 30); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$URL/" || echo 000)
+            echo "GET $URL/ -> $code"
+            case "$code" in
+              2*|3*) echo "Reachable from the public internet."; exit 0 ;;
+            esac
+            sleep 4
+          done
+          echo "::error title=Tunnel not reachable::The app runs locally but the tunnel does not serve it."
+          exit 1
+
+      # The seed builds leagues, teams, venues and officials but deliberately does
+      # not generate games — generating is the thing you do in the app. For a
+      # preview, though, landing on an empty calendar shows nothing, so drive a
+      # generate-and-publish through the real HTTP API as the scheduler. Over HTTP
+      # rather than direct Prisma writes on purpose: this way the preview data is
+      # produced by the same authorization, transaction and audit paths a user hits.
+      - name: Generate and publish a schedule
+        if: inputs.seed
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          export PGPASSWORD=postgres
+          psql() { command psql -h localhost -U postgres -d scheduler -tAq "$@"; }
+          api=http://localhost:3000/api
+          jar=$(mktemp)
+
+          org=$(psql -c "select id from \"Organization\" where slug = 'riverside-youth-soccer' limit 1")
+          if [ -z "$org" ]; then echo "No demo org found; leaving the preview empty."; exit 0; fi
+
+          code=$(curl -sS -c "$jar" -o /dev/null -w '%{http_code}' -X POST "$api/auth/login" \
+            -H 'content-type: application/json' \
+            -d '{"email":"scheduler@riverside.example","password":"demo-password-123"}')
+          if [ "$code" != "200" ]; then echo "Login returned $code; leaving the preview empty."; exit 0; fi
+          echo "Signed in as scheduler@riverside.example"
+
+          seasons=$(psql -c "select s.id from \"Season\" s
+                             join \"League\" l on l.id = s.\"leagueId\"
+                             where l.\"orgId\" = '$org'
+                               and s.\"deletedAt\" is null
+                               and s.status <> 'archived'
+                             order by s.\"startDate\"")
+
+          for season in $seasons; do
+            echo "--- season $season"
+            curl -sS -b "$jar" -o gen.json -w 'generate -> %{http_code}\n' \
+              -X POST "$api/orgs/$org/seasons/$season/generate" \
+              -H 'content-type: application/json' \
+              -d '{"commit":true,"note":"Seeded for the preview build"}'
+            node -e '
+              const r = JSON.parse(require("fs").readFileSync("gen.json", "utf8"));
+              if (r.error) return console.log("  " + r.error);
+              const c = r.report?.counts ?? {};
+              console.log(`  ${r.written?.created ?? 0} games, ${r.written?.assignments ?? 0} official slots, ` +
+                          `${r.report?.unplaced?.length ?? 0} unplaced, version ${r.version?.number}`);
+            ' || cat gen.json
+
+            version=$(psql -c "select id from \"ScheduleVersion\"
+                               where \"seasonId\" = '$season'
+                               order by number desc limit 1")
+            [ -z "$version" ] && continue
+
+            curl -sS -b "$jar" -o pub.json -w 'publish  -> %{http_code}\n' \
+              -X POST "$api/orgs/$org/seasons/$season/versions/$version/publish" \
+              -H 'content-type: application/json' \
+              -d '{"note":"Published for the preview build"}'
+            cat pub.json; echo
+          done
+
+          echo "Published seasons: $(psql -c "select count(*) from \"Season\" s
+            join \"League\" l on l.id = s.\"leagueId\"
+            where l.\"orgId\" = '$org' and s.\"publishedVersionId\" is not null")"
+
+          # The seed anchors the season to the current week, so a third of it is
+          # already in the past. Recording scores for those games is what makes the
+          # coach and viewer "recent results" panels show anything — an unplayed
+          # past fixture is deliberately not treated as a result.
+          #
+          # Through the API rather than an UPDATE, so the score entries land in the
+          # audit trail like any other edit.
+          played=0
+          for row in $(psql -c "select g.id || ':' || (abs(hashtext(g.id)) % 4) || ':' || (abs(hashtext(g.id || 'a')) % 4)
+                                from \"Game\" g
+                                join \"Season\" s on s.id = g.\"seasonId\"
+                                join \"League\" l on l.id = s.\"leagueId\"
+                                where l.\"orgId\" = '$org'
+                                  and g.\"deletedAt\" is null
+                                  and g.\"startTime\" < now()
+                                order by g.\"startTime\""); do
+            gameId=${row%%:*}
+            rest=${row#*:}
+            home=${rest%%:*}
+            away=${rest#*:}
+            code=$(curl -sS -b "$jar" -o /dev/null -w '%{http_code}' \
+              -X PATCH "$api/orgs/$org/games/$gameId" \
+              -H 'content-type: application/json' \
+              -d "{\"status\":\"played\",\"homeScore\":$home,\"awayScore\":$away}")
+            [ "$code" = "200" ] && played=$((played+1))
+          done
+          echo "Recorded results for $played games already in the past."
+
+      # The generator fills every available official to their daily cap, so straight
+      # after generating there is nothing any of them can volunteer for. Freeing a few
+      # positions reproduces the situation the request flow is actually for: a slot
+      # that opened up after the schedule was built.
+      - name: Open up a few officiating slots
+        if: inputs.seed
+        continue-on-error: true
+        run: npm run demo:openings
+
+      - name: Announce
+        env:
+          URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          echo "::notice title=Preview URL::$URL"
+          {
+            echo "# Preview is live"
+            echo
+            echo "## $URL"
+            echo
+            echo "Public page, no login needed: [$URL/s/riverside-youth-soccer]($URL/s/riverside-youth-soccer)"
+            echo
+            if [ "${{ inputs.seed }}" = "true" ]; then
+              echo "### Demo logins — password \`demo-password-123\`"
+              echo
+              echo "| Email | Role | What it shows |"
+              echo "|---|---|---|"
+              echo "| owner@riverside.example | owner | everything, including members and roles |"
+              echo "| admin@riverside.example | admin | everything except transferring ownership |"
+              echo "| scheduler@riverside.example | scheduler | generate, edit, publish — no member changes |"
+              echo "| coach@riverside.example | coach | read-only, plus reschedule requests |"
+              echo "| referee@riverside.example | referee | own assignments, availability, accept/decline |"
+              echo "| viewer@riverside.example | viewer | read-only |"
+              echo
+            fi
+            echo "Up for ${{ inputs.minutes }} minutes, then the URL stops resolving."
+            echo "Re-run this workflow for a fresh one. Data does not persist between runs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A `::notice::` and a job summary are readable by a person looking at the run
+      # page, but neither is retrievable through the REST API, and downloading a
+      # run's logs redirects to blob storage that a restricted network cannot reach.
+      # An artifact's *name*, on the other hand, comes back in plain listing
+      # metadata — so encode the hostname there. Cheap, and it makes the URL
+      # discoverable without opening a browser.
+      - name: Publish the URL as artifact metadata
+        id: record
+        env:
+          URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          set -euo pipefail
+          mkdir -p preview
+          echo "$URL" > preview/url.txt
+          echo "artifact=preview-url--${URL#https://}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.record.outputs.artifact }}
+          path: preview/url.txt
+          retention-days: 1
+
+      # One comment per pull request, edited in place rather than appended to, so a
+      # branch previewed ten times does not accumulate ten stale links.
+      - name: Comment the URL on the pull request
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ steps.tunnel.outputs.url }}
+          MINUTES: ${{ inputs.minutes }}
+          SEEDED: ${{ inputs.seed }}
+        run: |
+          set -uo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$owner:$GITHUB_REF_NAME" \
+                 --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then echo "No open pull request for $GITHUB_REF_NAME; nothing to comment on."; exit 0; fi
+
+          until=$(date -u -d "+${MINUTES} minutes" '+%H:%M UTC on %-d %b')
+
+          {
+            echo '<!-- preview-url -->'
+            echo "## Preview: $URL"
+            echo
+            echo "Live now, until about **$until**. The hostname is minted per run, so this"
+            echo "link dies with the run — re-run **Actions → Preview** for a fresh one."
+            echo
+            echo "- App: $URL"
+            echo "- Public schedule, no login: $URL/s/riverside-youth-soccer"
+            if [ "$SEEDED" = "true" ]; then
+              echo
+              echo "Every login below uses the password \`demo-password-123\`."
+              echo
+              echo '| Email | Role | Worth trying |'
+              echo '|---|---|---|'
+              echo '| `owner@riverside.example` | owner | members, roles, transfer ownership |'
+              echo '| `admin@riverside.example` | admin | everything but ownership transfer |'
+              echo '| `scheduler@riverside.example` | scheduler | drag a game onto an occupied slot — the override-with-reason flow |'
+              echo '| `coach@riverside.example` | coach | read-only; try editing and watch the server refuse |'
+              echo '| `referee@riverside.example` | referee | own assignments, availability, accept/decline |'
+              echo '| `viewer@riverside.example` | viewer | read-only |'
+            fi
+            echo
+            echo "Run [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+            echo
+            echo '---'
+            echo '_Generated by [Claude Code](https://claude.ai/code)_'
+          } > comment.md
+
+          jq -n --rawfile b comment.md '{body: $b}' > payload.json
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --paginate \
+                       --jq 'map(select(.body | contains("<!-- preview-url -->"))) | .[0].id // empty')
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" --input payload.json --jq .html_url
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --input payload.json --jq .html_url
+          fi
+
+      - name: Hold the preview open
+        env:
+          URL: ${{ steps.tunnel.outputs.url }}
+        run: |
+          set -uo pipefail
+          minutes=${{ inputs.minutes }}
+          case "$minutes" in ''|*[!0-9]*) minutes=330 ;; esac
+          [ "$minutes" -gt 330 ] && minutes=330
+          [ "$minutes" -lt 1 ] && minutes=1
+
+          deadline=$(( $(date +%s) + minutes * 60 ))
+          echo "Serving $URL until $(date -u -d "@$deadline" '+%H:%M UTC')."
+
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "::error title=App exited::The app process died while the preview was open."
+              tail -60 app.log
+              exit 1
+            fi
+            left=$(( (deadline - $(date +%s)) / 60 ))
+            echo "$URL alive — ${left}m remaining"
+            sleep 300
+          done
+
+          echo "Preview window elapsed. Shutting down."
+
+      - name: App log
+        if: always()
+        run: tail -100 app.log || true

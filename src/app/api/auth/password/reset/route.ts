@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { HttpError, clientIp, handler, parseBody } from '@/lib/http'
+import { AUTH_LIMITS, enforceRateLimit } from '@/lib/rate-limit'
 import { resetPasswordSchema } from '@/lib/validation'
 import { hashToken } from '@/lib/tokens'
 import { hashPassword } from '@/lib/password'
@@ -7,6 +8,15 @@ import { createSession, sessionCookie } from '@/lib/session'
 import { recordAudit } from '@/lib/audit'
 
 export const POST = handler(async (req) => {
+  // Token-guessing surface. The tokens are 256-bit, so guessing is not the real
+  // risk — unbounded work and unbounded audit noise are.
+  enforceRateLimit({
+    bucket: 'password-reset-submit',
+    ip: clientIp(req),
+    ...AUTH_LIMITS.tokenSubmission,
+    message: 'Too many attempts. Try again shortly.',
+  })
+
   const { token, password } = await parseBody(req, resetPasswordSchema)
 
   const record = await prisma.passwordResetToken.findUnique({

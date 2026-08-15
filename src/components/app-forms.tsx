@@ -84,7 +84,7 @@ export function SignOutButton() {
     <button
       type="button"
       disabled={busy}
-      className="text-sm text-ink-500 hover:underline dark:text-ink-300"
+      className="inline-flex min-h-11 items-center py-2 text-sm text-ink-500 hover:underline dark:text-ink-300"
       onClick={async () => {
         setBusy(true)
         await api('/api/auth/logout', { method: 'POST' })

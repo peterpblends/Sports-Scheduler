@@ -1,0 +1,281 @@
+name: Verify preview
+
+# Probes a running preview over the public internet and reports what it found.
+#
+# Separate from the Preview workflow on purpose: the preview job spends most of
+# its life parked in a hold loop, so anything that wants to check on it has to be
+# a different run. This one is cheap — no build, no database, just HTTP.
+#
+# It re-checks the authorization rules against the deployed app rather than the
+# test suite. The suite calls route handlers as functions, which is the right way
+# to test them but proves nothing about the thing actually serving traffic.
+
+# Least privilege. Declared at the top level so a job added later inherits read-only
+# rather than the repository default, which is often write-all.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Preview base URL (https://....trycloudflare.com)'
+        required: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Probe
+        id: probe
+        env:
+          BASE: ${{ inputs.url }}
+        run: |
+          set -uo pipefail
+          base=${BASE%/}
+          pass=0; fail=0
+          : > report.md
+
+          # $1 label, $2 expected code, $3 actual code
+          record() {
+            if [ "$2" = "$3" ]; then
+              echo "| ✅ | $1 | \`$2\` | \`$3\` |" >> report.md; pass=$((pass+1))
+            else
+              echo "| ❌ | $1 | \`$2\` | \`$3\` |" >> report.md; fail=$((fail+1))
+            fi
+          }
+
+          # curl helpers. --max-time keeps a dead tunnel from stalling the job.
+          # GET follows redirects, so "does this page render" is not confused with
+          # "this route redirects to /login"; POST does not, because the
+          # authorization checks below assert on the 401/403 itself.
+          get()  { curl -sS -L --max-time 25 -o "$2" -w '%{http_code}' ${3:+-b "$3"} "$1" || echo 000; }
+          post() { curl -sS --max-time 25 -o "$3" -w '%{http_code}' -X POST "$1" \
+                     -H 'content-type: application/json' -d "$2" ${4:+-b "$4"} ${5:+-c "$5"} || echo 000; }
+
+          login() {
+            jar=$(mktemp)
+            code=$(post "$base/api/auth/login" \
+              "{\"email\":\"$1@riverside.example\",\"password\":\"demo-password-123\"}" \
+              /dev/null "" "$jar")
+            echo "$code $jar"
+          }
+
+          echo '### Public surface' >> report.md
+          echo '| | Check | Expected | Got |' >> report.md
+          echo '|---|---|---|---|' >> report.md
+
+          record "GET / (unauthenticated)" 200 "$(get "$base/" home.html)"
+          record "GET /login" 200 "$(get "$base/login" login.html)"
+
+          pub=$(get "$base/s/riverside-youth-soccer" public.html)
+          record "GET /s/riverside-youth-soccer (no cookie)" 200 "$pub"
+
+          # A 200 that renders an empty shell would pass the check above while
+          # showing nothing, so assert on content too. `wc -l` rather than `grep -c`
+          # because grep exits 1 on no match, and under -e that ends the job.
+          games=$(grep -oE '[0-9]{1,2}:[0-9]{2}[[:space:]]*([AaPp][Mm])' public.html | wc -l)
+          teams=$(grep -oE 'Owls|Strikers|Rapids|Comets|Foxes' public.html | wc -l)
+          echo "" >> report.md
+          echo "Public page: **$(wc -c < public.html) bytes**, $games rendered kickoff times, $teams team-name hits." >> report.md
+          if [ "$games" -gt 0 ]; then
+            pass=$((pass+1)); echo "✅ The published schedule renders games." >> report.md
+          else
+            fail=$((fail+1)); echo "❌ The public page returned 200 but rendered no kickoff times." >> report.md
+            head -c 800 public.html >> report.md
+          fi
+
+          echo "" >> report.md
+          echo '### Sign-in, one per seeded role' >> report.md
+          echo '| | Check | Expected | Got |' >> report.md
+          echo '|---|---|---|---|' >> report.md
+
+          declare -A jars
+          for role in owner admin scheduler coach referee viewer; do
+            read -r code jar <<< "$(login "$role")"
+            jars[$role]=$jar
+            record "POST /api/auth/login as $role" 200 "$code"
+          done
+
+          record "POST /api/auth/login with a wrong password" 401 \
+            "$(post "$base/api/auth/login" '{"email":"owner@riverside.example","password":"nope"}' /dev/null)"
+
+          get "$base/api/orgs" orgs.json "${jars[owner]}" >/dev/null
+          org=$(node -e 'process.stdout.write(require("./orgs.json").orgs?.[0]?.orgId ?? "")' 2>/dev/null || true)
+          if [ -z "$org" ]; then
+            body=$(head -c 300 orgs.json || true)
+            echo "" >> report.md
+            echo "Could not read an org id from \`GET /api/orgs\`; org-scoped checks skipped. Body: \`$body\`" >> report.md
+          else
+            echo "" >> report.md
+            echo "### Server-side authorization, against the running app (non-negotiable #1)" >> report.md
+            echo "" >> report.md
+            echo "Org \`$org\`. Every row below is a request the client UI does not offer — sent" >> report.md
+            echo "directly at the API, which is the only place the answer matters." >> report.md
+            echo "" >> report.md
+            echo '| | Check | Expected | Got |' >> report.md
+            echo '|---|---|---|---|' >> report.md
+
+            # A scheduler may generate and publish but must not touch membership.
+            record "scheduler invites a member" 403 \
+              "$(post "$base/api/orgs/$org/members" '{"email":"x@y.example","role":"admin"}' /dev/null "${jars[scheduler]}")"
+            record "scheduler renames the org" 403 \
+              "$(curl -sS --max-time 25 -o /dev/null -w '%{http_code}' -X PATCH "$base/api/orgs/$org" \
+                   -H 'content-type: application/json' -d '{"name":"Hijacked"}' -b "${jars[scheduler]}" || echo 000)"
+
+            # A coach is read-only outside their own roster.
+            record "coach invites a member" 403 \
+              "$(post "$base/api/orgs/$org/members" '{"email":"x@y.example","role":"admin"}' /dev/null "${jars[coach]}")"
+            record "coach creates a league" 403 \
+              "$(post "$base/api/orgs/$org/leagues" '{"name":"Coach League"}' /dev/null "${jars[coach]}")"
+            record "coach creates a venue" 403 \
+              "$(post "$base/api/orgs/$org/venues" '{"name":"Coach Park","timezone":"America/Los_Angeles"}' /dev/null "${jars[coach]}")"
+            record "viewer creates a league" 403 \
+              "$(post "$base/api/orgs/$org/leagues" '{"name":"Viewer League"}' /dev/null "${jars[viewer]}")"
+            record "referee creates a league" 403 \
+              "$(post "$base/api/orgs/$org/leagues" '{"name":"Referee League"}' /dev/null "${jars[referee]}")"
+
+            # And the same requests with no cookie at all.
+            record "anonymous creates a league" 401 \
+              "$(post "$base/api/orgs/$org/leagues" '{"name":"Anon League"}' /dev/null)"
+            record "anonymous reads the audit trail" 401 \
+              "$(get "$base/api/orgs/$org/activity" /dev/null)"
+
+            # Owner can do what the others cannot — otherwise the 403s above could
+            # just mean the endpoint is broken for everyone.
+            record "owner reads the audit trail" 200 \
+              "$(get "$base/api/orgs/$org/activity" activity.json "${jars[owner]}")"
+            record "owner lists members" 200 \
+              "$(get "$base/api/orgs/$org/members" members.json "${jars[owner]}")"
+
+            echo "" >> report.md
+            events=$(node -e 'const a=require("./activity.json");const l=a.events??a.activity??a.items??[];console.log(Array.isArray(l)?l.length:0)' 2>/dev/null || echo 0)
+            echo "Audit trail visible to the owner: **$events events** on the first page." >> report.md
+
+            # --- the role-shaped pages, and officiating requests ----------------
+            echo "" >> report.md
+            echo '### What each role is served' >> report.md
+            echo "" >> report.md
+            echo '| | Check | Expected | Got |' >> report.md
+            echo '|---|---|---|---|' >> report.md
+
+            slug=$(node -e 'process.stdout.write(require("./orgs.json").orgs?.[0]?.orgSlug ?? "")' 2>/dev/null || true)
+
+            record "referee opens /app/$slug/officiating" 200 \
+              "$(get "$base/app/$slug/officiating" ref-officiating.html "${jars[referee]}")"
+            record "coach dashboard" 200 "$(get "$base/app/$slug" coach-dash.html "${jars[coach]}")"
+            record "viewer dashboard" 200 "$(get "$base/app/$slug" viewer-dash.html "${jars[viewer]}")"
+
+            # A 200 proves routing, not that the role got *their* page. These strings
+            # only appear on the role-specific view.
+            for probe in \
+              "ref-officiating.html:Games needing an official:the referee board renders its open-games section" \
+              "coach-dash.html:Your next game:the coach dashboard leads with their next fixture" \
+              "coach-dash.html:My team:the coach nav links straight to their own team" \
+              "viewer-dash.html:Coming up:the viewer dashboard leads with what is on"
+            do
+              file=${probe%%:*}
+              rest=${probe#*:}
+              needle=${rest%%:*}
+              label=${rest#*:}
+              if grep -qF "$needle" "$file" 2>/dev/null; then
+                echo "| ✅ | $label | present | present |" >> report.md; pass=$((pass+1))
+              else
+                echo "| ❌ | $label | present | missing |" >> report.md; fail=$((fail+1))
+              fi
+            done
+
+            asks=$(grep -oF 'Ask for this game' ref-officiating.html | wc -l)
+            echo "" >> report.md
+            echo "Games the referee may actually request: **$asks**." >> report.md
+            if [ "$asks" -gt 0 ]; then
+              pass=$((pass+1))
+              echo "✅ The request flow has something to act on." >> report.md
+            else
+              fail=$((fail+1))
+              echo "❌ Every open game is blocked for this referee, so nothing can be requested." >> report.md
+              echo "This is what \`npm run demo:openings\` exists to prevent." >> report.md
+            fi
+
+            # A referee volunteering is allowed; a coach or viewer doing it is not.
+            # Checked against a real game id so the 403 comes from the permission
+            # check rather than from a 404 on a bad path.
+            # No seasonId needed: the owner holds `schedule:read`, so this endpoint
+            # serves them live rows rather than demanding a published snapshot.
+            get "$base/api/orgs/$org/games" games.json "${jars[owner]}" >/dev/null
+            gameId=$(node -e 'process.stdout.write(require("./games.json").games?.[0]?.id ?? "")' 2>/dev/null || true)
+
+            if [ -n "$gameId" ]; then
+              echo "" >> report.md
+              echo '| | Check | Expected | Got |' >> report.md
+              echo '|---|---|---|---|' >> report.md
+              record "coach asks to officiate" 403 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null "${jars[coach]}")"
+              record "viewer asks to officiate" 403 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null "${jars[viewer]}")"
+              record "anonymous asks to officiate" 401 \
+                "$(post "$base/api/orgs/$org/games/$gameId/officiating-requests" '{"position":"AR1"}' /dev/null)"
+            else
+              echo "" >> report.md
+              echo "No game id available; the officiating-request refusals were not checked." >> report.md
+            fi
+          fi
+
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+          {
+            echo "# Preview verification"
+            echo
+            echo "**$pass passed, $fail failed** against \`$base\`"
+            echo
+            cat report.md
+          } > final.md
+          cat final.md >> "$GITHUB_STEP_SUMMARY"
+          cat final.md
+
+      # The same reason the preview workflow comments rather than relying on logs:
+      # a run's logs are only reachable through blob storage.
+      - name: Report
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$owner:$GITHUB_REF_NAME" --jq '.[0].number // empty')
+          # `[ -z "$pr" ] && { ...; }` would abort the step under the runner's
+          # default `bash -e` whenever a PR *does* exist, because the && list as a
+          # whole then returns 1. An if/then has no such edge.
+          if [ -z "$pr" ]; then
+            echo "No open PR; report is in the run summary only."
+            exit 0
+          fi
+
+          {
+            echo '<!-- preview-verification -->'
+            cat final.md 2>/dev/null || echo '_The probe step produced no report._'
+            echo
+            echo '---'
+            echo '_Generated by [Claude Code](https://claude.ai/code)_'
+          } > body.md
+
+          jq -n --rawfile b body.md '{body: $b}' > payload.json
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --paginate \
+                       --jq 'map(select(.body | contains("<!-- preview-verification -->"))) | .[0].id // empty')
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" --input payload.json --jq .html_url
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr/comments" --input payload.json --jq .html_url
+          fi
+
+      - name: Fail if any check failed
+        if: steps.probe.outputs.fail != '0'
+        run: |
+          echo "::error title=Preview verification failed::${{ steps.probe.outputs.fail }} check(s) did not match."
+          exit 1

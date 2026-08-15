@@ -14,7 +14,15 @@ export function Card({ children, className }: { children: ReactNode; className?:
   )
 }
 
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
+export function PageHeader({
+  title,
+  subtitle,
+  action,
+}: {
+  title: ReactNode
+  subtitle?: string
+  action?: ReactNode
+}) {
   return (
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
@@ -37,14 +45,22 @@ export function Label({ children, htmlFor }: { children: ReactNode; htmlFor?: st
 export const inputClass =
   'w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm outline-none placeholder:text-ink-400 focus:border-turf-500 focus:ring-2 focus:ring-turf-500/20 dark:border-ink-600 dark:bg-ink-900'
 
+// min-h-11 (44px) on all three: referees and coaches use these standing in a
+// parking lot on a phone, and py-2 alone lands under both Apple's and Material's
+// tap-target guidance.
+//
+// `bg-gold`/`text-ink-900` rather than `turf-600`/`text-white`: the primary button is
+// a solid brand-gold fill, which needs the constant vivid gold and a constant dark
+// on-gold text — not the theme-flipping "readable gold text" `turf-600` resolves to
+// elsewhere, which would read as a muddy brown fill in light mode.
 export const buttonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg bg-turf-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-turf-700 focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-gold px-4 py-2.5 text-sm font-medium text-ink-900 transition hover:bg-gold-dark focus:outline-none focus:ring-2 focus:ring-turf-500/40 disabled:cursor-not-allowed disabled:opacity-60'
 
 export const secondaryButtonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg border border-ink-300 bg-white px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-100 disabled:opacity-60 dark:border-ink-600 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink-300 bg-white px-4 py-2.5 text-sm font-medium text-ink-700 transition hover:bg-ink-100 disabled:opacity-60 dark:border-ink-600 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700'
 
 export const dangerButtonClass =
-  'inline-flex items-center justify-center gap-2 rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-60 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40'
+  'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-60 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40'
 
 export function Alert({ kind = 'error', children }: { kind?: 'error' | 'success' | 'info'; children: ReactNode }) {
   return (
@@ -77,6 +93,66 @@ export function RoleBadge({ role }: { role: string }) {
     >
       {role}
     </span>
+  )
+}
+
+/**
+ * League/team/person picture — a link to wherever it is already hosted, not an
+ * upload (see the schema doc comments on `League.logoUrl`, `Team.logoUrl`,
+ * `Person.photoUrl`). Falls back to the entity's initial when no URL is set. A
+ * broken URL is not handled specially — the browser's own broken-image glyph shows,
+ * same as a `<img>` anywhere else on the web — since a graceful fallback there would
+ * need client-side `onError` and this stays a server component so every list/detail
+ * page that uses it can too.
+ *
+ * Plain `<img>`, not `next/image`: the optimizer needs each remote host allow-listed
+ * ahead of time, which is impossible for a URL an operator can point anywhere.
+ */
+export function EntityImage({
+  src,
+  name,
+  size = 40,
+  shape = 'circle',
+  className,
+}: {
+  src?: string | null
+  name: string
+  size?: number
+  shape?: 'circle' | 'square'
+  className?: string
+}) {
+  const initial = name.trim().charAt(0).toUpperCase() || '?'
+  const dimension = { width: size, height: size }
+  const shapeClass = shape === 'circle' ? 'rounded-full' : 'rounded-lg'
+
+  if (!src) {
+    return (
+      <span
+        aria-hidden="true"
+        style={dimension}
+        className={clsx(
+          'inline-flex flex-none items-center justify-center bg-ink-200 font-semibold text-ink-600 dark:bg-ink-700 dark:text-ink-300',
+          shapeClass,
+          className,
+        )}
+      >
+        {initial}
+      </span>
+    )
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- arbitrary external host, see doc comment above
+    <img
+      src={src}
+      alt=""
+      style={dimension}
+      width={size}
+      height={size}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      className={clsx('flex-none border border-ink-200 object-cover dark:border-ink-700', shapeClass, className)}
+    />
   )
 }
 

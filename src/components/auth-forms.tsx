@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/client'
+import { safeRedirectPath } from '@/lib/redirect'
 import { Alert, Label, buttonClass, inputClass } from './ui'
 
 function useSubmit(action: (form: FormData) => Promise<void>) {
@@ -75,7 +76,9 @@ export function LoginForm({ next }: { next?: string }) {
     await api('/api/auth/login', {
       body: { email: form.get('email'), password: form.get('password') },
     })
-    router.push(next && next.startsWith('/') ? next : '/app')
+    // Same validation as the server page, from the same helper — a lenient copy
+    // here would reopen the redirect the server closed.
+    router.push(safeRedirectPath(next))
   })
 
   return (
