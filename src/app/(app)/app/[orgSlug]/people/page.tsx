@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
-import { Card, EmptyState, PageHeader } from '@/components/ui'
+import { Card, EmptyState, EntityImage, PageHeader } from '@/components/ui'
 import { CreateForm, Disclosure } from '@/components/crud-forms'
 import { DAY_NAMES, formatCalendarDate, formatTimeOfDay } from '@/lib/time'
 
@@ -50,7 +50,7 @@ export default async function PeoplePage({
           where: { deletedAt: null, person: { orgId, deletedAt: null } },
           orderBy: { person: { name: 'asc' } },
           include: {
-            person: { select: { id: true, name: true } },
+            person: { select: { id: true, name: true, photoUrl: true } },
             availability: { where: { deletedAt: null }, orderBy: [{ kind: 'asc' }, { dayOfWeek: 'asc' }] },
             _count: { select: { assignments: { where: { deletedAt: null } } } },
           },
@@ -142,8 +142,9 @@ export default async function PeoplePage({
                         <td className="py-2 pr-4">
                           <Link
                             href={`/app/${orgSlug}/people/${referee.person.id}`}
-                            className="font-medium text-turf-600 hover:underline"
+                            className="flex items-center gap-2 font-medium text-turf-600 hover:underline"
                           >
+                            <EntityImage src={referee.person.photoUrl} name={referee.person.name} size={24} />
                             {referee.person.name}
                           </Link>
                         </td>
@@ -256,8 +257,9 @@ export default async function PeoplePage({
                     <td className="py-2 pr-4">
                       <Link
                         href={`/app/${orgSlug}/people/${person.id}`}
-                        className="font-medium text-turf-600 hover:underline"
+                        className="flex items-center gap-2 font-medium text-turf-600 hover:underline"
                       >
+                        <EntityImage src={person.photoUrl} name={person.name} size={24} />
                         {person.name}
                       </Link>
                     </td>

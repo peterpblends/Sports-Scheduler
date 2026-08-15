@@ -32,6 +32,7 @@ const ICONS = {
     </>
   ),
   officiating: <path d="M5 3v18M5 4.5h12l-2.5 3.25L17 11H5" />,
+  standings: <path d="M5 20v-7M12 20V6M19 20v-4" />,
   members: (
     <>
       <circle cx="9" cy="8" r="3.25" />

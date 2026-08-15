@@ -155,6 +155,7 @@ export const createLeagueSchema = z.object({
   name: nameSchema,
   sport: z.string().trim().min(1).max(60).default('soccer'),
   description: optionalText,
+  logoUrl: urlSchema,
 })
 
 export const updateLeagueSchema = createLeagueSchema.partial()
@@ -223,6 +224,7 @@ export const createPersonSchema = z.object({
   conflictNote: optionalText,
   /// Links this person to an existing user account in the org.
   userId: z.string().min(1).nullish(),
+  photoUrl: urlSchema,
 })
 
 export const updatePersonSchema = createPersonSchema.partial()

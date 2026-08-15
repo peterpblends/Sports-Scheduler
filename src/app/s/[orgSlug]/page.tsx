@@ -4,10 +4,11 @@ import type { Metadata } from 'next'
 import { prisma } from '@/lib/prisma'
 import { readSchedule } from '@/lib/schedule/read'
 import { ScheduleList } from '@/components/schedule-views'
-import { Card, EmptyState } from '@/components/ui'
+import { Card, EmptyState, EntityImage } from '@/components/ui'
 import { formatCalendarDate } from '@/lib/time'
 import { YardMark } from '@/components/logo'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { computeSeasonStandings } from '@/lib/schedule/standings'
 
 /**
  * The public schedule (acceptance scenario 6, logged-out half).
@@ -79,7 +80,7 @@ export default async function PublicSchedulePage({
     : seasons[0]
   if (!season) notFound()
 
-  const [divisions, schedule] = await Promise.all([
+  const [divisions, schedule, standings, teamLogos] = await Promise.all([
     prisma.division.findMany({
       where: { seasonId: season.id, deletedAt: null },
       orderBy: { name: 'asc' },
@@ -94,7 +95,14 @@ export default async function PublicSchedulePage({
       canReadDrafts: false,
       filter: { teamId: query.teamId ?? null, divisionId: query.divisionId ?? null },
     }),
+    // Same rule as the schedule above: computed off the published snapshot only.
+    computeSeasonStandings({ orgId: org.id, seasonId: season.id, canReadDrafts: false }),
+    prisma.team.findMany({
+      where: { deletedAt: null, division: { seasonId: season.id, deletedAt: null } },
+      select: { id: true, logoUrl: true },
+    }),
   ])
+  const logoByTeam = new Map(teamLogos.map((t) => [t.id, t.logoUrl]))
 
   const selectedTeam = divisions
     .flatMap((division) => division.teams)
@@ -166,6 +174,65 @@ export default async function PublicSchedulePage({
         // Officials are hidden: the public needs to know when and where a game is, not
         // who is refereeing it.
         <ScheduleList rows={schedule.rows} orgSlug={orgSlug} linkGames={false} showOfficials={false} />
+      )}
+
+      {standings.some((division) => division.standings.some((row) => row.played > 0)) && (
+        <div className="mt-8 space-y-4">
+          <h2 className="text-lg font-semibold">Standings</h2>
+          {standings
+            .filter((division) => division.standings.some((row) => row.played > 0))
+            .map((division) => (
+              <Card key={division.divisionId}>
+                <h3 className="text-base font-semibold">{division.divisionName}</h3>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-left text-xs uppercase tracking-wide text-ink-500 dark:text-ink-400">
+                      <tr>
+                        <th className="pb-2 pr-2 font-medium">#</th>
+                        <th className="pb-2 pr-4 font-medium">Team</th>
+                        <th className="px-2 pb-2 text-right font-medium">GP</th>
+                        <th className="px-2 pb-2 text-right font-medium">W</th>
+                        <th className="px-2 pb-2 text-right font-medium">D</th>
+                        <th className="px-2 pb-2 text-right font-medium">L</th>
+                        <th className="px-2 pb-2 text-right font-medium">GD</th>
+                        <th className="pb-2 pl-2 text-right font-medium">Pts</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-ink-200 dark:divide-ink-700">
+                      {division.standings.map((row, index) => (
+                        <tr key={row.teamId}>
+                          <td className="py-2 pr-2 tabular-nums text-ink-500 dark:text-ink-400">
+                            {index + 1}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="flex items-center gap-2 font-medium">
+                              <EntityImage
+                                src={logoByTeam.get(row.teamId)}
+                                name={row.teamName}
+                                size={20}
+                                shape="square"
+                              />
+                              {row.teamName}
+                            </span>
+                          </td>
+                          <td className="px-2 py-2 text-right tabular-nums">{row.played}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{row.won}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{row.drawn}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{row.lost}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">
+                            {row.goalDifference > 0 ? `+${row.goalDifference}` : row.goalDifference}
+                          </td>
+                          <td className="py-2 pl-2 text-right font-semibold tabular-nums">
+                            {row.points}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ))}
+        </div>
       )}
 
       <footer className="mt-10 border-t border-ink-200 pt-6 text-sm text-ink-500 dark:border-ink-700 dark:text-ink-300">

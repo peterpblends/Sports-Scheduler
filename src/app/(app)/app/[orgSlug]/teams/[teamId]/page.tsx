@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
 import { staffTeamIds } from '@/lib/scope'
-import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'
+import { Alert, Card, EmptyState, EntityImage, PageHeader } from '@/components/ui'
 import { CreateForm, Disclosure, RemoveButton } from '@/components/crud-forms'
 import { RosterImport } from '@/components/roster-import'
 
@@ -28,7 +28,7 @@ export default async function TeamPage({
       memberships: {
         where: { deletedAt: null },
         orderBy: [{ role: 'asc' }, { jerseyNumber: 'asc' }],
-        include: { person: { select: { id: true, name: true, email: true, phone: true } } },
+        include: { person: { select: { id: true, name: true, email: true, phone: true, photoUrl: true } } },
       },
     },
   })
@@ -60,7 +60,12 @@ export default async function TeamPage({
   return (
     <>
       <PageHeader
-        title={team.name}
+        title={
+          <span className="flex items-center gap-3">
+            <EntityImage src={team.logoUrl} name={team.name} size={40} shape="square" />
+            {team.name}
+          </span>
+        }
         subtitle={`${team.division.season.league.name} · ${team.division.season.name} · ${team.division.name}`}
       />
 
@@ -126,6 +131,14 @@ export default async function TeamPage({
                   submitLabel="Save"
                   layout="stacked"
                   fields={[
+                    {
+                      name: 'logoUrl',
+                      label: 'Logo URL',
+                      type: 'url',
+                      defaultValue: team.logoUrl ?? '',
+                      placeholder: 'https://example.com/logo.png',
+                      help: 'Optional — a link to an image you already host somewhere.',
+                    },
                     { name: 'contactName', label: 'Contact name', defaultValue: team.contactName ?? '' },
                     {
                       name: 'contactEmail',
@@ -179,8 +192,9 @@ export default async function TeamPage({
                       <td className="py-2 pr-4">
                         <Link
                           href={`/app/${orgSlug}/people/${member.person.id}`}
-                          className="font-medium text-turf-600 hover:underline"
+                          className="flex items-center gap-2 font-medium text-turf-600 hover:underline"
                         >
+                          <EntityImage src={member.person.photoUrl} name={member.person.name} size={24} />
                           {member.person.name}
                         </Link>
                       </td>

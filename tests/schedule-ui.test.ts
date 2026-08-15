@@ -26,7 +26,8 @@ import { POST as assignOfficial } from '@/app/api/orgs/[orgId]/games/[gameId]/of
 import { GET as officialCandidates } from '@/app/api/orgs/[orgId]/games/[gameId]/officials/candidates/route'
 import { POST as importRoster } from '@/app/api/orgs/[orgId]/teams/[teamId]/import/route'
 import { POST as publish } from '@/app/api/orgs/[orgId]/seasons/[seasonId]/versions/[versionId]/publish/route'
-import { GET as listVersions } from '@/app/api/orgs/[orgId]/seasons/[seasonId]/versions/route'
+import { GET as listVersions, POST as saveVersion } from '@/app/api/orgs/[orgId]/seasons/[seasonId]/versions/route'
+import { GET as getStandings } from '@/app/api/orgs/[orgId]/seasons/[seasonId]/standings/route'
 
 import { parseCsv, parseRosterCsv, toCsv } from '@/lib/csv'
 import { buildScheduleGrid } from '@/lib/schedule/grid'
@@ -760,6 +761,95 @@ describe('schedule read layer', () => {
     ])
     expect(grouped).toHaveLength(1)
     expect(grouped[0]!.date).toBe('2026-05-16')
+  })
+})
+
+describe('division standings', () => {
+  type StandingRow = {
+    teamId: string
+    played: number
+    won: number
+    drawn: number
+    lost: number
+    goalsFor: number
+    goalsAgainst: number
+    goalDifference: number
+    points: number
+  }
+
+  const standings = (actor: TestUser) =>
+    call<{ orgId: string; seasonId: string }>(
+      getStandings,
+      `/api/orgs/${org.id}/seasons/${season.id}/standings`,
+      { token: actor.token, params: { orgId: org.id, seasonId: season.id } },
+    )
+
+  it('counts a played game with a final score and ignores everything else', async () => {
+    await gen(owner, { commit: true, config: { seed: 20, roundRobinTimes: 1 } })
+    const [decided] = await games()
+    await patch(owner, decided!.id, { status: 'played', homeScore: 2, awayScore: 0 })
+
+    const res = await standings(owner)
+    expect(res.status).toBe(200)
+    const rows = res.body.divisions[0].standings as StandingRow[]
+
+    const home = rows.find((r) => r.teamId === decided!.homeTeamId)!
+    const away = rows.find((r) => r.teamId === decided!.awayTeamId)!
+    expect(home).toMatchObject({ played: 1, won: 1, drawn: 0, lost: 0, points: 3, goalDifference: 2 })
+    expect(away).toMatchObject({ played: 1, won: 0, drawn: 0, lost: 1, points: 0, goalDifference: -2 })
+
+    // Every other team's games are still scheduled, not played — 0 across the board.
+    for (const row of rows) {
+      if (row.teamId === decided!.homeTeamId || row.teamId === decided!.awayTeamId) continue
+      expect(row.played).toBe(0)
+    }
+  })
+
+  it('serves live standings to a draft reader and nothing to everyone else until published', async () => {
+    await gen(owner, { commit: true, config: { seed: 21, roundRobinTimes: 1 } })
+    const [drawn] = await games()
+    await patch(owner, drawn!.id, { status: 'played', homeScore: 1, awayScore: 1 })
+
+    // Owner holds schedule:read (the draft-visible tier) and sees it immediately.
+    const ownerRows = (await standings(owner)).body.divisions[0].standings as StandingRow[]
+    expect(ownerRows.find((r) => r.teamId === drawn!.homeTeamId)!.played).toBe(1)
+
+    // Viewer does not, and nothing has been published — sees an untouched table.
+    const viewer = await inviteAndAccept(owner, org.id, 'viewer@example.com', 'viewer', mailer)
+    const viewerRowsBefore = (await standings(viewer)).body.divisions[0].standings as StandingRow[]
+    expect(viewerRowsBefore.every((r) => r.played === 0)).toBe(true)
+
+    // A fresh save, taken *after* the score was recorded — the version `gen`'s commit
+    // made is a snapshot from before that, and publishing it would not carry the
+    // score, exactly like the "frozen snapshot" behaviour tested elsewhere.
+    const saved = await call<{ orgId: string; seasonId: string }>(
+      saveVersion,
+      `/api/orgs/${org.id}/seasons/${season.id}/versions`,
+      { token: owner.token, params: { orgId: org.id, seasonId: season.id }, body: {} },
+    )
+    const versionId = saved.body.version.id as string
+    await call<{ orgId: string; seasonId: string; versionId: string }>(
+      publish,
+      `/api/orgs/${org.id}/seasons/${season.id}/versions/${versionId}/publish`,
+      { token: owner.token, params: { orgId: org.id, seasonId: season.id, versionId }, body: {} },
+    )
+
+    // Same viewer, now off the published snapshot, sees the result.
+    const viewerRowsAfter = (await standings(viewer)).body.divisions[0].standings as StandingRow[]
+    const viewerRow = viewerRowsAfter.find((r) => r.teamId === drawn!.homeTeamId)!
+    expect(viewerRow).toMatchObject({ played: 1, drawn: 1, points: 1 })
+  })
+
+  it('refuses a season that does not belong to the caller’s org', async () => {
+    const otherOwner = await signUp('otherowner@example.com')
+    const otherOrg = await createOrganization(otherOwner)
+
+    const res = await call<{ orgId: string; seasonId: string }>(
+      getStandings,
+      `/api/orgs/${otherOrg.id}/seasons/${season.id}/standings`,
+      { token: otherOwner.token, params: { orgId: otherOrg.id, seasonId: season.id } },
+    )
+    expect(res.status).toBe(404)
   })
 })
 

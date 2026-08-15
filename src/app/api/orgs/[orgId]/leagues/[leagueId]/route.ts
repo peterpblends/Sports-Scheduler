@@ -6,10 +6,16 @@ import { assertLeagueInOrg } from '@/lib/scope'
 
 type Ctx = { params: Promise<{ orgId: string; leagueId: string }> }
 
-const snapshot = (l: { name: string; sport: string; description: string | null }) => ({
+const snapshot = (l: {
+  name: string
+  sport: string
+  description: string | null
+  logoUrl: string | null
+}) => ({
   name: l.name,
   sport: l.sport,
   description: l.description,
+  logoUrl: l.logoUrl,
 })
 
 export const GET = handler<Ctx>(async (req, ctx) => {
@@ -54,6 +60,7 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
           ...(patch.name !== undefined ? { name: patch.name } : {}),
           ...(patch.sport !== undefined ? { sport: patch.sport } : {}),
           ...(patch.description !== undefined ? { description: patch.description ?? null } : {}),
+          ...(patch.logoUrl !== undefined ? { logoUrl: patch.logoUrl ?? null } : {}),
         },
       }),
   })

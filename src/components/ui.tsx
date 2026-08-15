@@ -14,7 +14,15 @@ export function Card({ children, className }: { children: ReactNode; className?:
   )
 }
 
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
+export function PageHeader({
+  title,
+  subtitle,
+  action,
+}: {
+  title: ReactNode
+  subtitle?: string
+  action?: ReactNode
+}) {
   return (
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
@@ -85,6 +93,66 @@ export function RoleBadge({ role }: { role: string }) {
     >
       {role}
     </span>
+  )
+}
+
+/**
+ * League/team/person picture — a link to wherever it is already hosted, not an
+ * upload (see the schema doc comments on `League.logoUrl`, `Team.logoUrl`,
+ * `Person.photoUrl`). Falls back to the entity's initial when no URL is set. A
+ * broken URL is not handled specially — the browser's own broken-image glyph shows,
+ * same as a `<img>` anywhere else on the web — since a graceful fallback there would
+ * need client-side `onError` and this stays a server component so every list/detail
+ * page that uses it can too.
+ *
+ * Plain `<img>`, not `next/image`: the optimizer needs each remote host allow-listed
+ * ahead of time, which is impossible for a URL an operator can point anywhere.
+ */
+export function EntityImage({
+  src,
+  name,
+  size = 40,
+  shape = 'circle',
+  className,
+}: {
+  src?: string | null
+  name: string
+  size?: number
+  shape?: 'circle' | 'square'
+  className?: string
+}) {
+  const initial = name.trim().charAt(0).toUpperCase() || '?'
+  const dimension = { width: size, height: size }
+  const shapeClass = shape === 'circle' ? 'rounded-full' : 'rounded-lg'
+
+  if (!src) {
+    return (
+      <span
+        aria-hidden="true"
+        style={dimension}
+        className={clsx(
+          'inline-flex flex-none items-center justify-center bg-ink-200 font-semibold text-ink-600 dark:bg-ink-700 dark:text-ink-300',
+          shapeClass,
+          className,
+        )}
+      >
+        {initial}
+      </span>
+    )
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- arbitrary external host, see doc comment above
+    <img
+      src={src}
+      alt=""
+      style={dimension}
+      width={size}
+      height={size}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      className={clsx('flex-none border border-ink-200 object-cover dark:border-ink-700', shapeClass, className)}
+    />
   )
 }
 

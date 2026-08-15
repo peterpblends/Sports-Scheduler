@@ -18,6 +18,7 @@ const snapshot = (p: Person) => ({
   hasConflictOfInterest: p.hasConflictOfInterest,
   conflictNote: p.conflictNote,
   userId: p.userId,
+  photoUrl: p.photoUrl,
 })
 
 export const GET = handler<Ctx>(async (req, ctx) => {
@@ -91,6 +92,7 @@ export const PATCH = handler<Ctx>(async (req, ctx) => {
             : {}),
           ...(patch.conflictNote !== undefined ? { conflictNote: patch.conflictNote ?? null } : {}),
           ...(patch.userId !== undefined ? { userId: patch.userId ?? null } : {}),
+          ...(patch.photoUrl !== undefined ? { photoUrl: patch.photoUrl ?? null } : {}),
         },
       }),
   })

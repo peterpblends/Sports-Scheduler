@@ -85,6 +85,12 @@ export default async function OrgLayout({
       badge: 0,
     },
     {
+      href: `/app/${orgSlug}/standings`,
+      label: 'Standings',
+      show: can(role, 'schedule:read:published'),
+      badge: 0,
+    },
+    {
       href: `/app/${orgSlug}/schedule/officials`,
       label: 'Officiating',
       show: can(role, 'official:assign'),
@@ -135,12 +141,15 @@ export default async function OrgLayout({
           ? [...(ownTeams.length === 1 ? ['My team'] : []), 'Schedule', 'Alerts', 'Account']
           : role === 'referee'
             ? ['My games', 'Schedule', 'Alerts', 'Account']
-            : ['Schedule', 'Alerts', 'Account']
+            // A viewer has no team, no crew, and nothing to assign — the schedule
+            // and the table it produces are the two things they actually came for.
+            : ['Schedule', 'Standings', 'Alerts', 'Account']
 
   const BOTTOM_ICONS: Record<string, BottomNavIcon> = {
     'My games': 'officiating',
     'My team': 'team',
     Schedule: 'schedule',
+    Standings: 'standings',
     Officiating: 'officiating',
     Venues: 'venues',
     Members: 'members',

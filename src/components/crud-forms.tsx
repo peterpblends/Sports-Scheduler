@@ -8,7 +8,7 @@ import { Alert, Label, buttonClass, dangerButtonClass, inputClass } from './ui'
 export type FieldSpec = {
   name: string
   label: string
-  type?: 'text' | 'email' | 'tel' | 'date' | 'time' | 'color' | 'number' | 'select' | 'textarea'
+  type?: 'text' | 'email' | 'tel' | 'url' | 'date' | 'time' | 'color' | 'number' | 'select' | 'textarea'
   options?: { value: string; label: string }[]
   required?: boolean
   placeholder?: string

@@ -17,6 +17,7 @@ const snapshot = (p: Person) => ({
   hasConflictOfInterest: p.hasConflictOfInterest,
   conflictNote: p.conflictNote,
   userId: p.userId,
+  photoUrl: p.photoUrl,
 })
 
 export const GET = handler<Ctx>(async (req, ctx) => {
@@ -87,6 +88,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
           hasConflictOfInterest: data.hasConflictOfInterest,
           conflictNote: data.conflictNote ?? null,
           userId: data.userId ?? null,
+          photoUrl: data.photoUrl ?? null,
         },
       }),
   })

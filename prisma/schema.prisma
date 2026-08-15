@@ -202,6 +202,9 @@ model League {
   // Sport-agnostic: free text rather than an enum, so a new sport needs no migration.
   sport       String       @default("soccer")
   description String?
+  /// A link to an already-hosted image, not an upload — same choice `Team.logoUrl`
+  /// already made. Public: shown on the anonymous published-schedule page.
+  logoUrl     String?
   createdAt   DateTime     @default(now()) @db.Timestamptz(3)
   updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
   deletedAt   DateTime?    @db.Timestamptz(3)
@@ -315,6 +318,12 @@ model Person {
   // Date of birth is a calendar date; it must not shift by zone.
   dob   DateTime? @db.Date
   notes String?
+
+  /// A link to an already-hosted image, not an upload. Deliberately never rendered
+  /// on the anonymous public schedule page — that page already withholds officials
+  /// and contact details, and a person's photo (rosters here include minors) is at
+  /// least as sensitive. Shown only on pages already gated by `roster:read`.
+  photoUrl String?
 
   /// Links this person to a login, so a coach's or referee's own-scope
   /// permissions can be resolved from their session.

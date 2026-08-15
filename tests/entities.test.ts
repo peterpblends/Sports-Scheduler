@@ -22,15 +22,17 @@ import {
 } from './helpers'
 
 import { GET as listLeagues, POST as createLeagueRoute } from '@/app/api/orgs/[orgId]/leagues/route'
-import { DELETE as deleteLeague } from '@/app/api/orgs/[orgId]/leagues/[leagueId]/route'
+import { DELETE as deleteLeague, PATCH as patchLeague } from '@/app/api/orgs/[orgId]/leagues/[leagueId]/route'
 import { POST as createSeasonRoute } from '@/app/api/orgs/[orgId]/seasons/route'
 import { PATCH as patchSeason } from '@/app/api/orgs/[orgId]/seasons/[seasonId]/route'
 import { POST as createDivisionRoute } from '@/app/api/orgs/[orgId]/divisions/route'
 import { POST as createTeamRoute, GET as listTeams } from '@/app/api/orgs/[orgId]/teams/route'
+import { PATCH as patchTeam } from '@/app/api/orgs/[orgId]/teams/[teamId]/route'
 import { POST as createVenueRoute, GET as listVenues } from '@/app/api/orgs/[orgId]/venues/route'
 import { POST as createFieldRoute } from '@/app/api/orgs/[orgId]/venues/[venueId]/fields/route'
 import { POST as createSlot } from '@/app/api/orgs/[orgId]/fields/[fieldId]/timeslots/route'
 import { POST as createPersonRoute } from '@/app/api/orgs/[orgId]/people/route'
+import { PATCH as patchPerson } from '@/app/api/orgs/[orgId]/people/[personId]/route'
 import { POST as createRefereeRoute, GET as listReferees } from '@/app/api/orgs/[orgId]/referees/route'
 import { POST as addAvailability } from '@/app/api/orgs/[orgId]/referees/[refereeId]/availability/route'
 import { DELETE as deleteAvailability } from '@/app/api/orgs/[orgId]/referees/[refereeId]/availability/[availabilityId]/route'
@@ -149,6 +151,110 @@ describe('the structure chain', () => {
       params: { orgId: org.id },
     })
     expect(listed.body.leagues).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Optional pictures — a link to wherever it is already hosted, not an upload.
+// ---------------------------------------------------------------------------
+
+describe('league, team and person picture URLs', () => {
+  it('stores, updates and clears a league logo URL', async () => {
+    const created = await call<{ orgId: string }>(createLeagueRoute, `/api/orgs/${org.id}/leagues`, {
+      token: owner.token,
+      params: { orgId: org.id },
+      body: { name: 'Rec League', sport: 'soccer', logoUrl: 'https://example.com/logo.png' },
+    })
+    expect(created.status).toBe(201)
+    expect(created.body.league.logoUrl).toBe('https://example.com/logo.png')
+    const leagueId = created.body.league.id as string
+
+    const updated = await call<{ orgId: string; leagueId: string }>(
+      patchLeague,
+      `/api/orgs/${org.id}/leagues/${leagueId}`,
+      {
+        method: 'PATCH',
+        token: owner.token,
+        params: { orgId: org.id, leagueId },
+        body: { logoUrl: 'https://example.com/new-logo.png' },
+      },
+    )
+    expect(updated.body.league.logoUrl).toBe('https://example.com/new-logo.png')
+
+    const cleared = await call<{ orgId: string; leagueId: string }>(
+      patchLeague,
+      `/api/orgs/${org.id}/leagues/${leagueId}`,
+      {
+        method: 'PATCH',
+        token: owner.token,
+        params: { orgId: org.id, leagueId },
+        body: { logoUrl: null },
+      },
+    )
+    expect(cleared.body.league.logoUrl).toBeNull()
+    expect((await prisma.league.findUniqueOrThrow({ where: { id: leagueId } })).logoUrl).toBeNull()
+  })
+
+  it('rejects a league logo that is not a valid URL', async () => {
+    const res = await call<{ orgId: string }>(createLeagueRoute, `/api/orgs/${org.id}/leagues`, {
+      token: owner.token,
+      params: { orgId: org.id },
+      body: { name: 'Rec League', sport: 'soccer', logoUrl: 'not-a-url' },
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('stores and updates a team logo URL', async () => {
+    const league = await createLeague(owner, org.id)
+    const season = await createSeason(owner, org.id, league.id)
+    const division = await createDivision(owner, org.id, season.id, 'U12 Boys')
+    const team = await createTeam(owner, org.id, division.id, 'Rovers')
+
+    const updated = await call<{ orgId: string; teamId: string }>(
+      patchTeam,
+      `/api/orgs/${org.id}/teams/${team.id}`,
+      {
+        method: 'PATCH',
+        token: owner.token,
+        params: { orgId: org.id, teamId: team.id },
+        body: { logoUrl: 'https://example.com/crest.png' },
+      },
+    )
+    expect(updated.status).toBe(200)
+    expect(updated.body.team.logoUrl).toBe('https://example.com/crest.png')
+    expect((await prisma.team.findUniqueOrThrow({ where: { id: team.id } })).logoUrl).toBe(
+      'https://example.com/crest.png',
+    )
+  })
+
+  it('stores and clears a person photo URL', async () => {
+    const person = await createPerson(owner, org.id, 'Ada Okonkwo', {
+      photoUrl: 'https://example.com/ada.jpg',
+    })
+    expect((await prisma.person.findUniqueOrThrow({ where: { id: person.id } })).photoUrl).toBe(
+      'https://example.com/ada.jpg',
+    )
+
+    const cleared = await call<{ orgId: string; personId: string }>(
+      patchPerson,
+      `/api/orgs/${org.id}/people/${person.id}`,
+      {
+        method: 'PATCH',
+        token: owner.token,
+        params: { orgId: org.id, personId: person.id },
+        body: { photoUrl: null },
+      },
+    )
+    expect(cleared.body.person.photoUrl).toBeNull()
+  })
+
+  it('rejects a person photo that is not a valid URL', async () => {
+    const res = await call<{ orgId: string }>(createPersonRoute, `/api/orgs/${org.id}/people`, {
+      token: owner.token,
+      params: { orgId: org.id },
+      body: { name: 'Ada', photoUrl: 'not-a-url' },
+    })
+    expect(res.status).toBe(400)
   })
 })
 

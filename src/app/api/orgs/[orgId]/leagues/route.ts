@@ -10,6 +10,7 @@ const snapshot = (l: League) => ({
   name: l.name,
   sport: l.sport,
   description: l.description,
+  logoUrl: l.logoUrl,
 })
 
 export const GET = handler<Ctx>(async (req, ctx) => {
@@ -27,9 +28,7 @@ export const GET = handler<Ctx>(async (req, ctx) => {
   return Response.json({
     leagues: leagues.map((l) => ({
       id: l.id,
-      name: l.name,
-      sport: l.sport,
-      description: l.description,
+      ...snapshot(l),
       seasonCount: l._count.seasons,
     })),
   })
@@ -59,6 +58,7 @@ export const POST = handler<Ctx>(async (req, ctx) => {
           name: data.name,
           sport: data.sport,
           description: data.description ?? null,
+          logoUrl: data.logoUrl ?? null,
         },
       }),
   })

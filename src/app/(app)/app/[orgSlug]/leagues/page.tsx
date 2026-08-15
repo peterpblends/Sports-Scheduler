@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
-import { Card, EmptyState, PageHeader } from '@/components/ui'
+import { Card, EmptyState, EntityImage, PageHeader } from '@/components/ui'
 import { CreateForm, Disclosure, RemoveButton } from '@/components/crud-forms'
 import { formatCalendarDate } from '@/lib/time'
 
@@ -42,6 +42,13 @@ export default async function LeaguesPage({ params }: { params: Promise<{ orgSlu
               { name: 'name', label: 'Name', required: true, placeholder: 'Recreational' },
               { name: 'sport', label: 'Sport', defaultValue: 'soccer', required: true },
               { name: 'description', label: 'Description' },
+              {
+                name: 'logoUrl',
+                label: 'Logo URL',
+                type: 'url',
+                placeholder: 'https://example.com/logo.png',
+                help: 'Optional — a link to an image you already host somewhere.',
+              },
             ]}
           />
         </Card>
@@ -54,12 +61,15 @@ export default async function LeaguesPage({ params }: { params: Promise<{ orgSlu
           {leagues.map((league) => (
             <Card key={league.id}>
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-semibold">{league.name}</h2>
-                  <p className="text-sm text-ink-500 dark:text-ink-300">
-                    {league.sport}
-                    {league.description ? ` · ${league.description}` : ''}
-                  </p>
+                <div className="flex items-center gap-3">
+                  <EntityImage src={league.logoUrl} name={league.name} size={40} shape="square" />
+                  <div>
+                    <h2 className="text-base font-semibold">{league.name}</h2>
+                    <p className="text-sm text-ink-500 dark:text-ink-300">
+                      {league.sport}
+                      {league.description ? ` · ${league.description}` : ''}
+                    </p>
+                  </div>
                 </div>
                 {editable && (
                   <RemoveButton
@@ -68,6 +78,35 @@ export default async function LeaguesPage({ params }: { params: Promise<{ orgSlu
                   />
                 )}
               </div>
+
+              {editable && (
+                <div className="mt-3">
+                  <Disclosure summary="Edit">
+                    <CreateForm
+                      endpoint={`/api/orgs/${orgId}/leagues/${league.id}`}
+                      method="PATCH"
+                      submitLabel="Save"
+                      layout="stacked"
+                      fields={[
+                        { name: 'name', label: 'Name', required: true, defaultValue: league.name },
+                        { name: 'sport', label: 'Sport', required: true, defaultValue: league.sport },
+                        {
+                          name: 'description',
+                          label: 'Description',
+                          defaultValue: league.description ?? '',
+                        },
+                        {
+                          name: 'logoUrl',
+                          label: 'Logo URL',
+                          type: 'url',
+                          defaultValue: league.logoUrl ?? '',
+                          help: 'Optional — a link to an image you already host somewhere.',
+                        },
+                      ]}
+                    />
+                  </Disclosure>
+                </div>
+              )}
 
               <ul className="mt-4 divide-y divide-ink-200 text-sm dark:divide-ink-700">
                 {league.seasons.length === 0 && (

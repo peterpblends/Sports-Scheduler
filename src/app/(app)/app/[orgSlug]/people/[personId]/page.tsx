@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { requireOrgAccess } from '@/lib/auth-server'
 import { can } from '@/lib/authz'
-import { Alert, Card, EmptyState, PageHeader } from '@/components/ui'
+import { Alert, Card, EmptyState, EntityImage, PageHeader } from '@/components/ui'
 import { CreateForm, Disclosure, RemoveButton } from '@/components/crud-forms'
 import { DAY_NAMES, formatCalendarDate, formatTimeOfDay } from '@/lib/time'
 
@@ -54,7 +54,12 @@ export default async function PersonPage({
   return (
     <>
       <PageHeader
-        title={person.name}
+        title={
+          <span className="flex items-center gap-3">
+            <EntityImage src={person.photoUrl} name={person.name} size={40} />
+            {person.name}
+          </span>
+        }
         subtitle={[person.email, person.phone].filter(Boolean).join(' · ') || 'No contact details'}
       />
 
@@ -99,6 +104,14 @@ export default async function PersonPage({
                     { name: 'name', label: 'Name', required: true, defaultValue: person.name },
                     { name: 'email', label: 'Email', type: 'email', defaultValue: person.email ?? '' },
                     { name: 'phone', label: 'Phone', type: 'tel', defaultValue: person.phone ?? '' },
+                    {
+                      name: 'photoUrl',
+                      label: 'Photo URL',
+                      type: 'url',
+                      defaultValue: person.photoUrl ?? '',
+                      placeholder: 'https://example.com/photo.jpg',
+                      help: 'Optional — a link to an image you already host somewhere. Never shown on the public schedule page.',
+                    },
                     {
                       name: 'notes',
                       label: 'Notes',

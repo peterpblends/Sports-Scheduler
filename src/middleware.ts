@@ -38,7 +38,11 @@ export function middleware(request: NextRequest) {
     // Next injects critical CSS inline, and there is no nonce mechanism for it.
     // Scoped to styles, which cannot execute.
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    // `https:` is here for league/team logos and person photos, which are stored as
+    // a link to wherever the operator already hosts the image, not an upload — so
+    // the host is unknown ahead of time. Scoped to `img-src` only: it cannot load a
+    // script or a stylesheet, only render as a bitmap.
+    "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "form-action 'self'",
