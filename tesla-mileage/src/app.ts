@@ -7,7 +7,8 @@ import * as repo from './db/repo.ts';
 import { readSettings, SETTING_KEYS, type AppSettings } from './settings.ts';
 import { config } from './config.ts';
 import { credentialsFor, TeslaClient } from './tesla/client.ts';
-import { DemoConnector } from './tesla/demo.ts';
+import { DemoConnector, seedDemoData } from './tesla/demo.ts';
+import { reclassifyAll } from './domain/pipeline.ts';
 import { Poller } from './tesla/poller.ts';
 import type { Connector } from './tesla/types.ts';
 import { nowIso } from './lib/time.ts';
@@ -65,6 +66,15 @@ export function createApp(): App {
   setDatabase(db);
   repo.seedRates(db);
 
+  // On a host with no permanent disk, run as an obvious demo rather than as
+  // something that looks like a ledger and then loses it.
+  if (config.previewMode) {
+    db.putSetting(SETTING_KEYS.connector, 'demo');
+    log.warn(
+      'preview mode: storage here is temporary, so this instance is running on demo data and will not keep anything',
+    );
+  }
+
   if (db.setting(SETTING_KEYS.timezone) === undefined) {
     db.putSetting(SETTING_KEYS.timezone, config.timezone);
   }
@@ -86,6 +96,13 @@ export function createApp(): App {
       poller.start();
     }
   };
+
+  if (config.previewMode && repo.listTrips(db, { limit: 1 }).length === 0) {
+    // Something to look at, so every screen is usable on a fresh preview.
+    const seeded = seedDemoData(db, { timezone: settings().timezone, days: 42 });
+    reclassifyAll(db);
+    log.info(`preview mode: seeded ${seeded.trips} demo trips`);
+  }
 
   if (initial !== null) poller.start();
 

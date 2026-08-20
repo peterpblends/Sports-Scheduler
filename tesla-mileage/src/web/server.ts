@@ -5,7 +5,7 @@
  * and redirects back where you were, so the back button and a refresh always
  * behave. Share links are handled first and are strictly read-only.
  */
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { App } from '../app.ts';
 import * as repo from '../db/repo.ts';
@@ -186,13 +186,20 @@ const ASSETS: Record<string, { body: string; type: string; etag: string }> = {
   '/app.js': { body: SCRIPT, type: 'text/javascript; charset=utf-8', etag: etagOf(SCRIPT) },
 };
 
-export function createHttpServer(app: App): Server {
+/**
+ * The whole app as a plain request handler.
+ *
+ * Kept separate from the server that listens on a port so the same routing can
+ * be handed to something else that supplies requests — a serverless platform,
+ * for one, where there is no long-lived server to create.
+ */
+export function createRequestListener(app: App): (request: IncomingMessage, response: ServerResponse) => void {
   // Wrong passcodes, writes, and share-link reads each get their own allowance.
   const loginLimiter = new RateLimiter(8, 5 * 60_000);
   const writeLimiter = new RateLimiter(240, 60_000);
   const shareLimiter = new RateLimiter(120, 60_000);
 
-  return createServer((request, response) => {
+  const listener = (request: IncomingMessage, response: ServerResponse): void => {
     void handle(request, response).catch((error: unknown) => {
       log.error('request failed', error);
       if (!response.headersSent) {
@@ -519,6 +526,10 @@ export function createHttpServer(app: App): Server {
       }
 
       if (path === '/connect/oauth/start') {
+        if (config.previewMode) {
+          redirect(ctx.response, '/connect', 'Connecting a car is disabled in this preview, which has no permanent storage.');
+          return;
+        }
         if (config.tesla.clientId === '') {
           redirect(ctx.response, '/connect', 'No Tesla client ID is configured yet.');
           return;
@@ -895,6 +906,14 @@ export function createHttpServer(app: App): Server {
       }
 
       if (path === '/connect/token') {
+        if (config.previewMode) {
+          redirect(
+            ctx.response,
+            '/connect',
+            'This is a preview with temporary storage, so it will not accept a Tesla token — it would be stored on a disk that disappears. Run the app somewhere permanent to connect your car.',
+          );
+          return;
+        }
         const token = str(form, 'refreshToken');
         const mode = form.get('mode') === 'fleet' ? 'fleet' : 'owner';
         if (token === null) {
@@ -973,5 +992,11 @@ export function createHttpServer(app: App): Server {
 
       notFound(ctx.response);
     }
-  });
+  };
+
+  return listener;
+}
+
+export function createHttpServer(app: App): Server {
+  return createServer(createRequestListener(app));
 }

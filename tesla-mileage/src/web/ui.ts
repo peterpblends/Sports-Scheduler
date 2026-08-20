@@ -4,6 +4,7 @@
  * app is as fast on a phone as it is on a laptop.
  */
 import type { Classification } from '../domain/types.ts';
+import { config } from '../config.ts';
 
 export function escape(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -713,6 +714,16 @@ export function layout(options: LayoutOptions): string {
   </div>
 </header>
 <main class="wrap" id="main">
+  ${
+    config.previewMode
+      ? `<div class="notice alert" role="status">
+          <strong>Preview — nothing here is kept.</strong>
+          This copy runs on a host with no permanent disk, so trips, labels and settings
+          disappear whenever it restarts. It is loaded with demo data so every screen works.
+          Keep the real ledger on a machine that stays on.
+        </div>`
+      : ''
+  }
   ${
     flash === null || flash === undefined || flash === ''
       ? ''

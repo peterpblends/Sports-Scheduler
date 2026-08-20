@@ -9,7 +9,7 @@ one file, and costs nothing to operate.
 
 ```
 node --version   # needs 22.18 or newer
-node tesla-mileage/src/index.ts
+node src/index.ts
 # open http://127.0.0.1:8730
 ```
 
@@ -170,7 +170,7 @@ the built-in demo car and look around before deciding anything.
 ### 1. Run it
 
 ```bash
-node tesla-mileage/src/index.ts
+node src/index.ts
 ```
 
 Open <http://127.0.0.1:8730>. On the default settings the app listens only on
@@ -179,7 +179,7 @@ your own machine, so there is no login to get past.
 To look around with a simulated car and six weeks of realistic history:
 
 ```bash
-node tesla-mileage/src/index.ts --seed-demo
+node src/index.ts --seed-demo
 ```
 
 ### 2. Connect the car
@@ -240,17 +240,55 @@ The settings worth knowing about:
 - `MILE_LEDGER_GEOCODE` — set to `0` to keep every coordinate on this machine and
   never look up an address.
 
-### Running it always-on
+### Where to run it
 
 Live reading only happens while the app is running, so a machine that is always
-on records more detail. But nothing is lost when it is off: the next time the app
+on records more detail. Nothing is lost when it is off: the next time the app
 reads the car, the odometer has moved and those miles are recorded as a
-reconstructed trip. Running it on a laptop that sleeps is a perfectly reasonable
-way to use this — you get complete mileage totals and less route detail.
+reconstructed trip. A laptop that sleeps is a perfectly reasonable way to use
+this — complete totals, less route detail.
 
-A few free ways to keep it running: a Raspberry Pi or an old machine at home, a
-free-tier always-on VM from a cloud provider, or a `launchd`/`systemd` service on
-a desktop that stays awake.
+| Where | Good for | Notes |
+|---|---|---|
+| **Your own machine** | getting going in a minute | `node src/index.ts`, nothing else to do |
+| **Docker** | a spare box, a NAS, a Pi | `docker build -t mile-ledger . && docker run -p 8730:8730 -v mile-ledger-data:/data mile-ledger` |
+| **systemd** | an always-free cloud VM | copy `deploy/mile-ledger.service`, adjust the paths, `systemctl enable --now` |
+| **Vercel** | showing someone the app | preview only — see below |
+
+Set a passcode and `MILE_LEDGER_SECRET` before exposing any of these past your
+own machine.
+
+### About Vercel
+
+The app will deploy to Vercel and every screen works, but it can only ever be a
+**preview** there, and the app says so on every page rather than letting you find
+out later.
+
+Two things a serverless platform cannot give this app:
+
+- **A disk that persists.** Vercel functions get a `/tmp` that belongs to one
+  instance and disappears with it. A SQLite ledger there loses trips on the next
+  cold start — the worst possible failure for a tax record, because nothing looks
+  broken.
+- **A process that stays alive.** Reading the car every ninety seconds while it
+  drives needs something always running. Serverless functions only exist while
+  answering a request, and scheduled functions on the free plan run once a day.
+
+So when the app detects a serverless host it starts in preview mode: loaded with
+demo data, a banner on every page saying nothing is kept, and it refuses to store
+a Tesla refresh token on a disk that is about to vanish. Useful for clicking
+around on your phone or showing your accountant the report format — not for your
+mileage.
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fpeterpblends%2Fmile-ledger)
+
+Set the project's Node version to 22.x — the app uses Node's built-in SQLite,
+which does not exist in Node 20. If you ever do attach real persistent storage,
+`MILE_LEDGER_DURABLE_STORAGE=1` turns preview mode off.
+
+Making Vercel the real home would mean moving the database to a hosted service
+and converting the whole data layer to async, which would cost the two properties
+this app was built for: no running costs, and one file you own.
 
 If you expose it beyond your own machine, **set a passcode first** (Settings →
 Access, or More → Access). The app refuses non-local connections until you do.
@@ -314,6 +352,8 @@ src/
     guard.ts        rate limiting and same-origin checks
     auth.ts         passcode, sessions, share tokens
   db/         schema and typed queries over node:sqlite
+api/          the serverless entry point, for a preview deployment
+deploy/       systemd unit for an always-on host
 ```
 
 Money is handled in integer cents end to end, so a total never depends on the

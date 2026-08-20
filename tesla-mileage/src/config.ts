@@ -53,6 +53,28 @@ function bool(name: string, fallback: boolean): boolean {
   return /^(1|true|yes|on)$/i.test(v.trim());
 }
 
+/**
+ * Is this running somewhere with no permanent disk?
+ *
+ * Serverless platforms give a function a writable /tmp that belongs to one
+ * instance and disappears with it. A SQLite ledger there would lose trips
+ * without warning, which for a tax record is worse than not running at all — so
+ * the app detects the situation and says so rather than quietly pretending.
+ *
+ * Setting MILE_LEDGER_DURABLE_STORAGE=1 overrides this, for the case where real
+ * persistent storage genuinely is mounted.
+ */
+function detectEphemeral(): boolean {
+  if (/^(1|true)$/i.test(process.env.MILE_LEDGER_DURABLE_STORAGE ?? '')) return false;
+  if (/^(1|true)$/i.test(process.env.MILE_LEDGER_PREVIEW ?? '')) return true;
+  const serverless =
+    process.env.VERCEL !== undefined ||
+    process.env.NOW_REGION !== undefined ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined ||
+    process.env.FUNCTIONS_WORKER_RUNTIME !== undefined;
+  return serverless;
+}
+
 /** Which source of vehicle data the poller should use. */
 export type ConnectorName = 'fleet' | 'owner' | 'demo' | 'manual';
 
@@ -62,10 +84,21 @@ function connector(): ConnectorName {
   return 'manual';
 }
 
+const ephemeral = detectEphemeral();
+
 export const config = {
   port: int('PORT', DEFAULT_PORT),
   host: str('MILE_LEDGER_HOST', '127.0.0.1'),
-  dbPath: resolve(str('MILE_LEDGER_DB', join(projectRoot, 'data', 'mileage.db'))),
+  /**
+   * Preview mode: the app runs, every screen works, and it is loaded with demo
+   * data — but it states plainly on every page that nothing is kept, refuses to
+   * store Tesla credentials on a disk that will vanish, and never touches the
+   * real Tesla API.
+   */
+  previewMode: ephemeral,
+  dbPath: ephemeral
+    ? '/tmp/mile-ledger-preview.db'
+    : resolve(str('MILE_LEDGER_DB', join(projectRoot, 'data', 'mileage.db'))),
   /** Used to build absolute links (CPA share link, OAuth redirect). */
   baseUrl: str('MILE_LEDGER_BASE_URL', ''),
   timezone: str('MILE_LEDGER_TZ', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'),
