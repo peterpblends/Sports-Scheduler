@@ -1,0 +1,21 @@
+{
+  "name": "mile-ledger",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Free, self-hosted mileage ledger that turns Tesla vehicle data into CPA-ready business/personal mileage records.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/index.ts",
+    "demo": "MILE_LEDGER_CONNECTOR=demo node --no-warnings=ExperimentalWarning src/index.ts",
+    "test": "node --no-warnings=ExperimentalWarning --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "import": "node --no-warnings=ExperimentalWarning src/cli/import.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.8.2"
+  }
+}
