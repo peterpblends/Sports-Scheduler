@@ -8,9 +8,24 @@ import type { Database } from '../db/index.ts';
 import * as repo from '../db/repo.ts';
 import type { AppSettings } from '../settings.ts';
 import type { Classification, Trip, Place } from '../domain/types.ts';
-import { summarize, type Summary } from '../export/summary.ts';
-import { badge, card, emptyState, escape, layout, milesText, money, stat, type NavKey, type StatusStrip } from './ui.ts';
+import { type Summary } from '../export/summary.ts';
+import { aggregateSummary } from '../export/aggregate.ts';
+import {
+  badge,
+  card,
+  emptyState,
+  escape,
+  layout,
+  milesText,
+  money,
+  selectField,
+  stat,
+  textField,
+  type NavKey,
+  type StatusStrip,
+} from './ui.ts';
 import { PERIOD_CHOICES, periodQuery, resolvePeriod, type Period } from './period.ts';
+import { chartLegend, monthlyMilesChart, type ChartRow } from './chart.ts';
 import { humanAgo, humanDuration, localClock, localLongDate, localMonth, localMonthRange, localYear, localYearRange, nowIso } from '../lib/time.ts';
 import { mapUrl } from '../lib/geo.ts';
 
@@ -67,11 +82,12 @@ export function tripRow(
   ].join(' ');
 
   return `<div class="trip${trip.needsReview ? ' review' : ''}">
-    <div class="row between">
-      <div class="when">${escape(tripTime(trip, tz))} · ${escape(humanDuration(trip.durationSeconds))} ${badge(trip.classification)} ${flags}</div>
-      <div class="miles">${milesText(trip.distanceMiles)} mi</div>
+    <div class="trip-head">
+      <span class="when">${escape(tripTime(trip, tz))}</span>
+      <span class="miles">${milesText(trip.distanceMiles)} mi</span>
     </div>
     <div class="route">${escape(trip.startDescription ?? 'Unknown')}<span class="arrow">→</span>${escape(trip.endDescription ?? 'Unknown')}${endLink}</div>
+    <div class="tags">${badge(trip.classification)} <span class="when">${escape(humanDuration(trip.durationSeconds))}</span> ${flags}</div>
     <div class="why">${escape(trip.classificationReason ?? '')}${
       trip.purpose === null && trip.client === null
         ? ''
@@ -79,9 +95,9 @@ export function tripRow(
     }</div>
     <div class="actions">
       ${quick}
-      <button class="small" type="button" onclick="mlMore(${trip.id})">More…</button>
+      <button class="small" type="button" data-more="${trip.id}" aria-expanded="false" aria-controls="more-${trip.id}">More…</button>
     </div>
-    <div class="actions" id="more-${trip.id}" style="display:none">
+    <div class="actions" id="more-${trip.id}" hidden>
       ${extra}
       ${
         trip.locked
@@ -102,12 +118,28 @@ export function tripRow(
       <form method="post" action="/trips/${trip.id}/details">
         <input type="hidden" name="return" value="${back}">
         <div class="fields three">
-          <div><label>Business purpose</label><input name="purpose" value="${escape(trip.purpose ?? '')}" placeholder="Site visit, delivery, client meeting"></div>
-          <div><label>Client or project</label><input name="client" value="${escape(trip.client ?? '')}"></div>
-          <div><label>Notes</label><input name="notes" value="${escape(trip.notes ?? '')}"></div>
+          ${textField({
+            id: `purpose-${trip.id}`,
+            name: 'purpose',
+            label: 'Business purpose',
+            value: trip.purpose ?? '',
+            placeholder: 'Site visit, delivery, client meeting',
+          })}
+          ${textField({
+            id: `client-${trip.id}`,
+            name: 'client',
+            label: 'Client or project',
+            value: trip.client ?? '',
+          })}
+          ${textField({
+            id: `notes-${trip.id}`,
+            name: 'notes',
+            label: 'Notes',
+            value: trip.notes ?? '',
+          })}
         </div>
         <div class="row" style="margin-top:8px">
-          <button class="primary small" type="submit">Save</button>
+          <button class="primary small" type="submit" data-busy="Saving…">Save</button>
           <span class="small">Odometer ${trip.startOdometerMiles === null ? '—' : milesText(trip.startOdometerMiles)} → ${trip.endOdometerMiles === null ? '—' : milesText(trip.endOdometerMiles)}</span>
         </div>
       </form>
@@ -185,10 +217,18 @@ export function dashboardPage(context: ViewContext): string {
   const monthRange = localMonthRange(monthKey, tz);
   const rates = repo.ratePeriods(db);
 
-  const yearTrips = repo.tripsForExport(db, { from: yearRange.from, to: yearRange.to });
-  const yearSummary = summarize(yearTrips, { timezone: tz, rates });
-  const monthTrips = repo.tripsForExport(db, { from: monthRange.from, to: monthRange.to });
-  const monthSummary = summarize(monthTrips, { timezone: tz, rates });
+  const yearSummary = aggregateSummary(db, {
+    timezone: tz,
+    rates,
+    from: yearRange.from,
+    to: yearRange.to,
+  });
+  const monthSummary = aggregateSummary(db, {
+    timezone: tz,
+    rates,
+    from: monthRange.from,
+    to: monthRange.to,
+  });
 
   const business = yearSummary.byClassification.business ?? { trips: 0, miles: 0, deduction: 0 };
   const review = repo.unclassifiedTrips(db, 8);
@@ -240,14 +280,48 @@ export function dashboardPage(context: ViewContext): string {
           { title: 'Needs a decision' },
         );
 
+  const chartRows: ChartRow[] = yearSummary.months.map((month) => ({
+    // Short month name; the year is implied by the period.
+    label: month.label.split(' ')[0]?.slice(0, 3) ?? month.month,
+    business: month.business.miles,
+    other: Math.round((month.totalMiles - month.business.miles) * 10) / 10,
+  }));
+
+  const trendCard =
+    chartRows.length === 0
+      ? ''
+      : card(
+          `${monthlyMilesChart(chartRows, { idPrefix: 'dash' })}
+           ${chartLegend({ businessLabel: 'Business miles', otherLabel: 'Personal, commute and undecided' })}
+           <div class="scroll" style="margin-top:12px">
+             <table>
+               <thead><tr><th scope="col">Month</th><th scope="col" class="n">Business</th><th scope="col" class="n">Other</th><th scope="col" class="n">Deduction</th></tr></thead>
+               <tbody>
+                 ${yearSummary.months
+                   .slice(-8)
+                   .map(
+                     (month) => `<tr>
+                       <th scope="row" style="font-weight:400;text-transform:none;letter-spacing:0">${escape(month.label)}</th>
+                       <td class="n">${milesText(month.business.miles)}</td>
+                       <td class="n">${milesText(Math.round((month.totalMiles - month.business.miles) * 10) / 10)}</td>
+                       <td class="n">${month.business.deduction === 0 ? '—' : money(month.business.deduction)}</td>
+                     </tr>`,
+                   )
+                   .join('')}
+               </tbody>
+             </table>
+           </div>`,
+          { title: `Miles by month, ${year}` },
+        );
+
   const monthTable = card(
     `<div class="scroll"><table>
-      <thead><tr><th>Category</th><th class="n">Trips</th><th class="n">Miles</th><th class="n">Deduction</th></tr></thead>
+      <thead><tr><th scope="col">Category</th><th scope="col" class="n">Trips</th><th scope="col" class="n">Miles</th><th scope="col" class="n">Deduction</th></tr></thead>
       <tbody>
         ${(['business', 'commute', 'personal', 'unclassified'] as Classification[])
           .map((key) => {
             const totals = monthSummary.byClassification[key] ?? { trips: 0, miles: 0, deduction: 0 };
-            return `<tr><td>${badge(key)}</td><td class="n">${totals.trips}</td><td class="n">${milesText(totals.miles)}</td><td class="n">${totals.deduction === 0 ? '—' : money(totals.deduction)}</td></tr>`;
+            return `<tr><th scope="row" style="font-weight:400;text-transform:none;letter-spacing:0">${badge(key)}</th><td class="n">${totals.trips}</td><td class="n">${milesText(totals.miles)}</td><td class="n">${totals.deduction === 0 ? '—' : money(totals.deduction)}</td></tr>`;
           })
           .join('')}
       </tbody>
@@ -266,10 +340,19 @@ export function dashboardPage(context: ViewContext): string {
     <div style="height:14px"></div>
     ${reviewCard}
     ${suggestionsCard(db)}
+    ${trendCard}
     <div class="spread two">${vehicleCard}${monthTable}</div>
   `;
 
-  return layout({ title: 'Today', nav: 'today', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Today',
+    nav: 'today',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: settings.appearance,
+    colour: settings.colour,
+  });
 }
 
 export type TripListParams = {
@@ -278,6 +361,9 @@ export type TripListParams = {
   reviewOnly: boolean;
   search: string;
   page: number;
+  /** Limit to trips that started or ended at one labelled place. */
+  placeId?: number;
+  placeName?: string;
 };
 
 export function tripsPage(context: ViewContext, params: TripListParams): string {
@@ -292,18 +378,26 @@ export function tripsPage(context: ViewContext, params: TripListParams): string 
     classification: params.classification === 'all' ? undefined : (params.classification as Classification),
     needsReview: params.reviewOnly ? true : undefined,
     search: params.search === '' ? undefined : params.search,
+    placeId: params.placeId,
   };
 
   const total = repo.countTrips(db, filter);
   const trips = repo.listTrips(db, { ...filter, limit: perPage, offset: (params.page - 1) * perPage });
-  const allInPeriod = repo.tripsForExport(db, filter);
-  const summary = summarize(allInPeriod, { timezone: tz, rates });
+  const summary = aggregateSummary(db, {
+    timezone: tz,
+    rates,
+    from: params.period.from,
+    to: params.period.to,
+    filter,
+    months: false,
+  });
 
   const base = (overrides: Record<string, string>): string => {
     const params2 = new URLSearchParams(periodQuery(params.period));
     if (params.classification !== 'all') params2.set('category', params.classification);
     if (params.reviewOnly) params2.set('review', '1');
     if (params.search !== '') params2.set('q', params.search);
+    if (params.placeId !== undefined) params2.set('place', String(params.placeId));
     for (const [key, value] of Object.entries(overrides)) {
       if (value === '') params2.delete(key);
       else params2.set(key, value);
@@ -314,13 +408,13 @@ export function tripsPage(context: ViewContext, params: TripListParams): string 
 
   const periodChips = PERIOD_CHOICES.map(
     (choice) =>
-      `<a class="chip ${params.period.key === choice.key ? 'on' : ''}" href="/trips?period=${choice.key}${params.classification === 'all' ? '' : `&category=${params.classification}`}${params.reviewOnly ? '&review=1' : ''}">${escape(choice.label)}</a>`,
+      `<a class="chip" ${params.period.key === choice.key ? 'aria-current="true"' : ''} href="/trips?period=${choice.key}${params.classification === 'all' ? '' : `&category=${params.classification}`}${params.reviewOnly ? '&review=1' : ''}">${escape(choice.label)}</a>`,
   ).join('');
 
   const categoryChips = ['all', 'business', 'personal', 'commute', 'unclassified']
     .map(
       (key) =>
-        `<a class="chip ${params.classification === key ? 'on' : ''}" href="${escape(base({ category: key === 'all' ? '' : key }))}">${escape(key === 'all' ? 'Every category' : key)}</a>`,
+        `<a class="chip" ${params.classification === key ? 'aria-current="true"' : ''} href="${escape(base({ category: key === 'all' ? '' : key }))}">${escape(key === 'all' ? 'Every category' : key)}</a>`,
     )
     .join('');
 
@@ -335,19 +429,39 @@ export function tripsPage(context: ViewContext, params: TripListParams): string 
         </div>`;
 
   const body = `
-    <div class="head"><h1>Trips</h1><div class="small">${escape(params.period.label)} · ${total} trip${total === 1 ? '' : 's'}</div></div>
+    <div class="head"><h1>Trips</h1><div class="small">${escape(params.period.label)} · ${total} trip${total === 1 ? '' : 's'}${
+      params.placeName === undefined ? '' : ` · at ${escape(params.placeName)}`
+    }</div></div>
+    ${
+      params.placeName === undefined
+        ? ''
+        : `<div class="notice">Showing only trips that started or ended at <strong>${escape(params.placeName)}</strong>. <a href="/trips">Show every trip</a></div>`
+    }
 
     <section class="card tight">
       <div class="chips" style="margin-bottom:8px">${periodChips}</div>
       <div class="chips" style="margin-bottom:8px">${categoryChips}
-        <a class="chip ${params.reviewOnly ? 'on' : ''}" href="${escape(base({ review: params.reviewOnly ? '' : '1' }))}">Needs a decision</a>
+        <a class="chip" ${params.reviewOnly ? 'aria-current="true"' : ''} href="${escape(base({ review: params.reviewOnly ? '' : '1' }))}">Needs a decision</a>
       </div>
-      <form method="get" action="/trips" class="row">
+      <form method="get" action="/trips" class="row" role="search">
         <input type="hidden" name="period" value="${escape(params.period.key)}">
         ${params.period.rawFrom === undefined ? '' : `<input type="hidden" name="from" value="${escape(params.period.rawFrom)}">`}
         ${params.period.rawTo === undefined ? '' : `<input type="hidden" name="to" value="${escape(params.period.rawTo)}">`}
-        <input name="q" value="${escape(params.search)}" placeholder="Search a place, client or note" style="flex:1;min-width:180px">
-        <button type="submit" class="small">Search</button>
+        ${params.classification === 'all' ? '' : `<input type="hidden" name="category" value="${escape(params.classification)}">`}
+        ${params.reviewOnly ? '<input type="hidden" name="review" value="1">' : ''}
+        <div style="flex:1 1 200px">
+          ${textField({
+            id: 'trip-search',
+            name: 'q',
+            label: 'Search trips',
+            type: 'search',
+            inputmode: 'search',
+            value: params.search,
+            placeholder: 'A place, client or note',
+            extraAttributes: 'enterkeyhint="search"',
+          })}
+        </div>
+        <div style="align-self:end"><button type="submit" class="small">Search</button></div>
       </form>
     </section>
 
@@ -378,19 +492,35 @@ export function tripsPage(context: ViewContext, params: TripListParams): string 
               <input type="hidden" name="category" value="${escape(params.classification)}">
               <input type="hidden" name="review" value="${params.reviewOnly ? '1' : ''}">
               <input type="hidden" name="q" value="${escape(params.search)}">
-              <span class="small">Set all ${total} trips in this view to</span>
-              <select name="classification" style="width:auto">
-                ${['business', 'personal', 'commute', 'medical', 'charity']
-                  .map((option) => `<option value="${option}">${escape(option)}</option>`)
-                  .join('')}
-              </select>
-              <button class="small" type="submit" onclick="return confirm('Set every trip in this view? Each one will be recorded as your own decision.')">Apply</button>
+              <div style="flex:1 1 220px">
+                ${selectField({
+                  id: 'bulk-classification',
+                  name: 'classification',
+                  label: `Set all ${total} trips in this view to`,
+                  value: 'business',
+                  choices: ['business', 'personal', 'commute', 'medical', 'charity'].map((option) => ({
+                    value: option,
+                    label: option,
+                  })),
+                })}
+              </div>
+              <div style="align-self:end">
+                <button class="small" type="submit" data-busy="Applying…" data-confirm="Set every trip in this view? Each one will be recorded as your own decision.">Apply</button>
+              </div>
             </form>
           </section>`
     }
   `;
 
-  return layout({ title: 'Trips', nav: 'trips', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Trips',
+    nav: 'trips',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: settings.appearance,
+    colour: settings.colour,
+  });
 }
 
 export function statusStrip(

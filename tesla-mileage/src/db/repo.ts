@@ -18,6 +18,9 @@ import { parseConditions } from '../domain/classify.ts';
 import type { GeoInfo } from '../domain/places.ts';
 import { IRS_RATES, type RatePeriod } from '../domain/rates.ts';
 import { localMonth, nowIso } from '../lib/time.ts';
+import { open as openSecret, seal } from '../lib/secretbox.ts';
+import { config } from '../config.ts';
+import { log } from '../lib/log.ts';
 
 // -- small coercion helpers ---------------------------------------------------
 
@@ -421,19 +424,79 @@ export function toTrip(row: Row): Trip {
 
 export type TripUpsert = Omit<Trip, 'id'>;
 
+/** The longest a single drive could plausibly be, used to bound overlap lookups. */
+const MAX_DRIVE_MS = 24 * 3600_000;
+
 /**
- * Insert or update a trip keyed on (vehicle, start time). Re-running the
- * stitcher over the same window is therefore idempotent, and a trip the owner
- * has decided on keeps their classification.
+ * Find a stored trip that covers the same drive as `trip`.
+ *
+ * Matching on the start time alone is not enough. As more readings arrive for a
+ * drive — a backfilled import, or a poll that catches its first minutes — the
+ * stitcher can legitimately place the same drive a few minutes earlier than it
+ * did before. Keyed only on the start time that produces a second row for one
+ * drive, and the miles get counted twice, which would overstate a deduction.
+ *
+ * So: exact start time first (the common case), then any trip whose time range
+ * overlaps. Where several overlap, the one sharing the most time wins.
  */
-export function upsertTrip(db: Database, trip: TripUpsert): { id: number; created: boolean } {
-  const existing = db.get<Row>(
-    'SELECT id, locked FROM trip WHERE vehicle_id = ? AND started_at = ?',
+function findSameDrive(db: Database, trip: TripUpsert): { id: number; locked: boolean } | null {
+  const exact = db.get<Row>(
+    'SELECT id, locked FROM trip WHERE vehicle_id = ? AND started_at = ? AND deleted_at IS NULL',
     trip.vehicleId,
     trip.startedAt,
   );
+  if (exact !== undefined) return { id: Number(exact.id), locked: flag(exact.locked) };
 
-  if (existing === undefined) {
+  // Bound the search to a window around the new trip. Without the lower bound
+  // this predicate has to consider every earlier trip in the ledger, which turns
+  // a full rebuild into quadratic work — slow enough to be unusable after a
+  // couple of years of driving. No single drive runs longer than a day.
+  const windowStart = new Date(Date.parse(trip.startedAt) - MAX_DRIVE_MS).toISOString();
+  const overlapping = db.all<Row>(
+    `SELECT id, locked, started_at, ended_at FROM trip
+      WHERE vehicle_id = ? AND deleted_at IS NULL
+        AND started_at > ? AND started_at < ? AND ended_at > ?
+      ORDER BY started_at`,
+    trip.vehicleId,
+    windowStart,
+    trip.endedAt,
+    trip.startedAt,
+  );
+  if (overlapping.length === 0) return null;
+
+  const newStart = Date.parse(trip.startedAt);
+  const newEnd = Date.parse(trip.endedAt);
+  let best: { id: number; locked: boolean; shared: number } | null = null;
+  for (const row of overlapping) {
+    const shared =
+      Math.min(newEnd, Date.parse(String(row.ended_at))) -
+      Math.max(newStart, Date.parse(String(row.started_at)));
+    if (best === null || shared > best.shared) {
+      best = { id: Number(row.id), locked: flag(row.locked), shared };
+    }
+  }
+  if (best === null) return null;
+
+  // Anything else overlapping this drive is a leftover from a narrower view of
+  // the same data. Retire the ones the owner has not decided on, so one drive
+  // is one row and the miles are counted once.
+  for (const row of overlapping) {
+    const id = Number(row.id);
+    if (id === best.id || flag(row.locked)) continue;
+    db.run('UPDATE trip SET deleted_at = ? WHERE id = ?', nowIso(), id);
+  }
+  return { id: best.id, locked: best.locked };
+}
+
+/**
+ * Insert or update a trip. Re-running the stitcher over the same window is
+ * idempotent, and a trip the owner has decided on keeps their classification
+ * while still having its distance corrected from the odometer.
+ */
+export function upsertTrip(db: Database, trip: TripUpsert): { id: number; created: boolean } {
+  const existing = findSameDrive(db, trip);
+
+  if (existing === null) {
     const stamp = nowIso();
     const { lastInsertRowid } = db.run(
       `INSERT INTO trip
@@ -478,17 +541,23 @@ export function upsertTrip(db: Database, trip: TripUpsert): { id: number; create
     return { id: lastInsertRowid, created: true };
   }
 
-  const id = Number(existing.id);
-  const locked = flag(existing.locked);
+  const { id, locked } = existing;
 
-  // Geometry and distance always refresh; the owner's decision never does.
+  // Geometry and distance always refresh; the owner's decision never does. The
+  // start moves too, because a drive can turn out to have begun earlier than
+  // the readings first showed.
   db.run(
     `UPDATE trip SET
+       started_at = ?, start_latitude = ?, start_longitude = ?, start_odometer_miles = ?,
        ended_at = ?, end_latitude = ?, end_longitude = ?, end_odometer_miles = ?,
        distance_miles = ?, duration_seconds = ?, inferred = ?, open = ?, distance_source = ?,
        start_place_id = ?, end_place_id = ?, start_description = ?, end_description = ?,
        signature = ?, deleted_at = NULL, updated_at = ?
      WHERE id = ?`,
+    trip.startedAt,
+    trip.startLatitude,
+    trip.startLongitude,
+    trip.startOdometerMiles,
     trip.endedAt,
     trip.endLatitude,
     trip.endLongitude,
@@ -546,47 +615,58 @@ export type TripFilter = {
   offset?: number;
 };
 
-function whereFor(filter: TripFilter): { sql: string; params: (string | number | null)[] } {
-  const clauses = ['t.deleted_at IS NULL'];
+/**
+ * The one place trip filters turn into SQL, shared by the row queries and the
+ * aggregate ones so a filter cannot mean two different things depending on which
+ * path a page happens to take.
+ */
+export function tripWhere(
+  filter: TripFilter,
+  prefix = 't.',
+): { sql: string; params: (string | number | null)[] } {
+  const t = prefix;
+  const clauses = [`${t}deleted_at IS NULL`];
   const params: (string | number | null)[] = [];
 
   if (filter.from !== undefined) {
-    clauses.push('t.started_at >= ?');
+    clauses.push(`${t}started_at >= ?`);
     params.push(filter.from);
   }
   if (filter.to !== undefined) {
-    clauses.push('t.started_at < ?');
+    clauses.push(`${t}started_at < ?`);
     params.push(filter.to);
   }
   if (filter.classification !== undefined && filter.classification !== 'all') {
     if (filter.classification === 'deductible') {
-      clauses.push("t.classification IN ('business','medical','charity')");
+      clauses.push(`${t}classification IN ('business','medical','charity')`);
     } else {
-      clauses.push('t.classification = ?');
+      clauses.push(`${t}classification = ?`);
       params.push(filter.classification);
     }
   }
-  if (filter.needsReview === true) clauses.push('t.needs_review = 1');
+  if (filter.needsReview === true) clauses.push(`${t}needs_review = 1`);
   if (filter.vehicleId !== undefined) {
-    clauses.push('t.vehicle_id = ?');
+    clauses.push(`${t}vehicle_id = ?`);
     params.push(filter.vehicleId);
   }
   if (filter.placeId !== undefined) {
-    clauses.push('(t.start_place_id = ? OR t.end_place_id = ?)');
+    clauses.push(`(${t}start_place_id = ? OR ${t}end_place_id = ?)`);
     params.push(filter.placeId, filter.placeId);
   }
   if (filter.search !== undefined && filter.search.trim() !== '') {
     const like = `%${filter.search.trim().toLowerCase()}%`;
     clauses.push(
-      `(LOWER(COALESCE(t.start_description,'')) LIKE ? OR LOWER(COALESCE(t.end_description,'')) LIKE ?
-        OR LOWER(COALESCE(t.purpose,'')) LIKE ? OR LOWER(COALESCE(t.client,'')) LIKE ?
-        OR LOWER(COALESCE(t.notes,'')) LIKE ?)`,
+      `(LOWER(COALESCE(${t}start_description,'')) LIKE ? OR LOWER(COALESCE(${t}end_description,'')) LIKE ?
+        OR LOWER(COALESCE(${t}purpose,'')) LIKE ? OR LOWER(COALESCE(${t}client,'')) LIKE ?
+        OR LOWER(COALESCE(${t}notes,'')) LIKE ?)`,
     );
     params.push(like, like, like, like, like);
   }
 
   return { sql: clauses.join(' AND '), params };
 }
+
+const whereFor = tripWhere;
 
 export function listTrips(db: Database, filter: TripFilter = {}): Trip[] {
   const { sql, params } = whereFor(filter);
@@ -728,6 +808,12 @@ export function setTripPlaces(
  * Retire trips in a window that the stitcher no longer produces — an artifact of
  * an earlier, less complete view of the data. Anything the owner classified is
  * kept, because their record is the one that matters.
+ *
+ * `from` must be the timestamp of the oldest reading the stitcher actually had.
+ * Readings are pruned after a while but trips are kept forever, so a trip older
+ * than the surviving readings simply cannot be re-derived — and must not be
+ * mistaken for a stale artifact and deleted. Getting this wrong silently erases
+ * mileage, so the floor is the caller's responsibility to supply correctly.
  */
 export function retireStaleTrips(
   db: Database,
@@ -938,10 +1024,17 @@ export type StoredToken = {
 export function getToken(db: Database, provider: string): StoredToken | null {
   const row = db.get<Row>('SELECT * FROM token WHERE provider = ?', provider);
   if (row === undefined) return null;
+  const storedRefresh = text(row.refresh_token);
+  const refreshToken = storedRefresh === null ? null : openSecret(storedRefresh, config.secret);
+  if (storedRefresh !== null && refreshToken === null) {
+    log.error(
+      'the stored Tesla refresh token cannot be decrypted — MILE_LEDGER_SECRET has changed or is missing. Reconnect the car to store a new token.',
+    );
+  }
   return {
     provider: String(row.provider),
     accessToken: text(row.access_token),
-    refreshToken: text(row.refresh_token),
+    refreshToken,
     expiresAt: text(row.expires_at),
     region: text(row.region),
     scope: text(row.scope),
@@ -961,7 +1054,7 @@ export function saveToken(db: Database, token: StoredToken): void {
        updated_at = excluded.updated_at`,
     token.provider,
     token.accessToken,
-    token.refreshToken,
+    token.refreshToken === null ? null : seal(token.refreshToken, config.secret),
     token.expiresAt,
     token.region,
     token.scope,

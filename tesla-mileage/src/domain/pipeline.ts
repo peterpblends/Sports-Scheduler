@@ -170,10 +170,15 @@ export function rebuildTrips(db: Database, vehicleId: number, fromIso?: string):
     }
   });
 
+  // Only the stretch actually covered by surviving readings can be judged
+  // stale. Older trips are kept: their readings were pruned long ago, so their
+  // absence from this pass says nothing about whether they happened.
+  const oldestReading = samples[0]?.at ?? from;
+  const retireFrom = oldestReading > from ? oldestReading : from;
   const retired = repo.retireStaleTrips(
     db,
     vehicleId,
-    from,
+    retireFrom,
     stitched.trips.map((trip) => trip.startedAt),
   );
 

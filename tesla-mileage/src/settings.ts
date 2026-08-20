@@ -7,9 +7,15 @@ import type { Database } from './db/index.ts';
 import type { Classification } from './domain/types.ts';
 import { isClassification } from './domain/types.ts';
 import { config } from './config.ts';
+import { isValidTimezone } from './lib/time.ts';
+import { log } from './lib/log.ts';
 
 export type AppSettings = {
   timezone: string;
+  /** Follow the device, or override it. */
+  appearance: 'system' | 'light' | 'dark';
+  /** Full colour, or black and white. Independent of light/dark. */
+  colour: 'colour' | 'mono';
   businessName: string;
   ownerName: string;
   vehicleDescription: string;
@@ -38,6 +44,8 @@ export type AppSettings = {
 
 export const SETTING_KEYS = {
   timezone: 'timezone',
+  appearance: 'appearance',
+  colour: 'colour_mode',
   businessName: 'business_name',
   ownerName: 'owner_name',
   vehicleDescription: 'vehicle_description',
@@ -64,11 +72,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** A usable zone, whatever is stored. Falls back rather than throwing. */
+function safeTimezone(stored: string): string {
+  if (isValidTimezone(stored)) return stored;
+  log.warn(`stored time zone "${stored}" is not one Intl recognises; falling back to ${config.timezone}`);
+  if (isValidTimezone(config.timezone)) return config.timezone;
+  return 'UTC';
+}
+
 export function readSettings(db: Database): AppSettings {
   const fallbackRaw = db.settingOr(SETTING_KEYS.fallback, 'unclassified');
   const commuteRaw = db.settingOr(SETTING_KEYS.commuteHandling, 'commute');
+  const appearanceRaw = db.settingOr(SETTING_KEYS.appearance, 'system');
+  const colourRaw = db.settingOr(SETTING_KEYS.colour, 'colour');
   return {
-    timezone: db.settingOr(SETTING_KEYS.timezone, config.timezone),
+    timezone: safeTimezone(db.settingOr(SETTING_KEYS.timezone, config.timezone)),
+    appearance: appearanceRaw === 'light' || appearanceRaw === 'dark' ? appearanceRaw : 'system',
+    colour: colourRaw === 'mono' ? 'mono' : 'colour',
     businessName: db.settingOr(SETTING_KEYS.businessName, ''),
     ownerName: db.settingOr(SETTING_KEYS.ownerName, ''),
     vehicleDescription: db.settingOr(SETTING_KEYS.vehicleDescription, ''),
@@ -93,10 +113,21 @@ export function readSettings(db: Database): AppSettings {
   };
 }
 
-export function writeSettings(db: Database, patch: Record<string, string>): void {
+/**
+ * Write settings, ignoring keys that are not ours and values that would break
+ * the app. Returns a message for anything refused, so the UI can say so instead
+ * of silently keeping the old value.
+ */
+export function writeSettings(db: Database, patch: Record<string, string>): string[] {
   const allowed = new Set<string>(Object.values(SETTING_KEYS));
+  const refused: string[] = [];
   for (const [key, value] of Object.entries(patch)) {
     if (!allowed.has(key)) continue;
+    if (key === SETTING_KEYS.timezone && !isValidTimezone(value)) {
+      refused.push(`"${value}" is not a time zone name. Keeping ${db.settingOr(SETTING_KEYS.timezone, config.timezone)}. Use a name like America/Chicago.`);
+      continue;
+    }
     db.putSetting(key, value);
   }
+  return refused;
 }

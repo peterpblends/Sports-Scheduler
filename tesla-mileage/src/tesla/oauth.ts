@@ -11,6 +11,8 @@
  */
 import { FLEET_AUTH_BASE, FLEET_REGIONS } from './client.ts';
 
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export type FleetAppConfig = {
   clientId: string;
   clientSecret: string;
@@ -67,6 +69,7 @@ export async function exchangeCode(app: FleetAppConfig, code: string): Promise<T
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Tesla rejected the authorization code (${response.status}): ${text.slice(0, 300)}`);
@@ -98,6 +101,7 @@ export async function partnerToken(app: FleetAppConfig): Promise<string> {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`could not get a partner token (${response.status}): ${text.slice(0, 300)}`);
@@ -122,6 +126,7 @@ export async function registerPartnerAccount(
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({ domain }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const detail = await response.text();
   return { ok: response.ok, status: response.status, detail: detail.slice(0, 500) };

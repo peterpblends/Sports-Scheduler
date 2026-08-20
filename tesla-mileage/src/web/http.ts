@@ -60,15 +60,32 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
+/** Is this request arriving over HTTPS, directly or through a proxy? */
+export function isSecureRequest(request: IncomingMessage): boolean {
+  const forwarded = String(request.headers['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    ?.trim()
+    .toLowerCase();
+  if (forwarded === 'https') return true;
+  const socket = request.socket as { encrypted?: boolean };
+  return socket.encrypted === true;
+}
+
 export function setCookie(
   response: ServerResponse,
   name: string,
   value: string,
-  options: { maxAgeSeconds?: number; httpOnly?: boolean; sameSite?: 'Lax' | 'Strict' } = {},
+  options: {
+    maxAgeSeconds?: number;
+    httpOnly?: boolean;
+    sameSite?: 'Lax' | 'Strict';
+    secure?: boolean;
+  } = {},
 ): void {
   const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/'];
   if (options.maxAgeSeconds !== undefined) parts.push(`Max-Age=${options.maxAgeSeconds}`);
   if (options.httpOnly !== false) parts.push('HttpOnly');
+  if (options.secure === true) parts.push('Secure');
   parts.push(`SameSite=${options.sameSite ?? 'Lax'}`);
   const existing = response.getHeader('set-cookie');
   const list = Array.isArray(existing) ? existing : existing === undefined ? [] : [String(existing)];
@@ -76,12 +93,39 @@ export function setCookie(
   response.setHeader('set-cookie', list);
 }
 
+/**
+ * Security headers applied to every HTML response.
+ *
+ * The pages carry no inline scripts — everything is delegated from /app.js — so
+ * script-src can stay at 'self'. Styles are the one exception: the printable
+ * report is a standalone document that has to keep working when saved to disk,
+ * so its stylesheet is inline.
+ */
+export const SECURITY_HEADERS: Record<string, string> = {
+  'content-security-policy': [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+  ].join('; '),
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer',
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-resource-policy': 'same-origin',
+  'permissions-policy': 'geolocation=(), camera=(), microphone=(), payment=()',
+};
+
 export function html(response: ServerResponse, body: string, status = 200): void {
   response.writeHead(status, {
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
+    ...SECURITY_HEADERS,
   });
   response.end(body);
 }

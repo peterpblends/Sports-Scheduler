@@ -11,6 +11,23 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Is this a time zone Intl will accept?
+ *
+ * Every date in the app is rendered through the configured zone, so a bad value
+ * would throw on every page — including the settings page needed to correct it.
+ * Anything reaching Intl is checked here first.
+ */
+export function isValidTimezone(zone: string): boolean {
+  if (zone.trim() === '') return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function toIso(value: Date | number | string): string {
   if (typeof value === 'string') return new Date(value).toISOString();
   if (typeof value === 'number') return new Date(value).toISOString();

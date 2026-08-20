@@ -53,6 +53,15 @@ export const CREDIT_COST = {
 /** A reading older than this is treated as a cached snapshot, not a live read. */
 const CACHE_STALENESS_MS = 120_000;
 
+/**
+ * Give up on a request rather than let it hang.
+ *
+ * Without this a stalled connection would leave the poller's in-flight flag set
+ * forever, and the app would quietly stop recording — the worst possible failure
+ * mode for a mileage log, because nothing looks broken.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export type TeslaMode = 'fleet' | 'owner';
 
 export type TeslaCredentials = {
@@ -161,6 +170,7 @@ export class TeslaClient implements Connector {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -194,6 +204,7 @@ export class TeslaClient implements Connector {
     const token = await this.authorize();
     const response = await fetch(`${this.credentials.apiBase}${path}`, {
       headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const text = await response.text();
     let json: unknown = null;
@@ -241,8 +252,14 @@ export class TeslaClient implements Connector {
       ({ status, json, text } = await this.call(path));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
       this.record('vehicle_data', 0, false, false, detail);
-      return { ok: false, reason: 'unauthorized', detail, creditsSpent: 0 };
+      return {
+        ok: false,
+        reason: timedOut ? 'error' : 'unauthorized',
+        detail: timedOut ? 'Tesla did not answer in time' : detail,
+        creditsSpent: 0,
+      };
     }
 
     if (status === 408 || status === 503) {

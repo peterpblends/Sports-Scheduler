@@ -11,6 +11,7 @@ import type { RatePeriod } from '../domain/rates.ts';
 import { rateCents } from '../domain/rates.ts';
 import { localClock, localDate, localLongDate, nowIso } from '../lib/time.ts';
 import type { Summary } from './summary.ts';
+import { chartLegend, monthlyMilesChart, type ChartRow } from '../web/chart.ts';
 
 function escapeHtml(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return '';
@@ -23,6 +24,8 @@ function escapeHtml(value: string | number | null | undefined): string {
 
 export type ReportOptions = {
   timezone: string;
+  /** Print without colour: greys only, with categories carried by glyph. */
+  monochrome?: boolean;
   rates: RatePeriod[];
   businessName: string;
   ownerName: string;
@@ -32,42 +35,62 @@ export type ReportOptions = {
   includePersonal: boolean;
 };
 
+const COLOUR_TOKENS = `
+    --paper: #ffffff; --ink: #111111; --ink-2: #444444; --ink-3: #666666;
+    --rule: #e4e4e4; --rule-strong: #111111; --panel: #f6f6f6; --panel-line: #d5d5d5;
+    --highlight: #f3f7f3; --highlight-line: #b9cdb9;
+    --business-bg: #e8f2e8; --business-line: #9ec09e;
+    --personal-bg: #f0f0f0; --personal-line: #cccccc;
+    --commute-bg: #fdf3e3; --commute-line: #ddc79b;
+    --pending-bg: #fdeaea; --pending-line: #e0a6a6;
+    --chart-a: #1baf7a; --chart-b: #2a78d6; --chart-grid: #e6e6e6; --surface: #ffffff;`;
+
+const MONO_TOKENS = `
+    --paper: #ffffff; --ink: #000000; --ink-2: #333333; --ink-3: #555555;
+    --rule: #d9d9d9; --rule-strong: #000000; --panel: #f2f2f2; --panel-line: #cccccc;
+    --highlight: #ededed; --highlight-line: #999999;
+    --business-bg: #e6e6e6; --business-line: #333333;
+    --personal-bg: #f2f2f2; --personal-line: #999999;
+    --commute-bg: #ebebeb; --commute-line: #666666;
+    --pending-bg: #e0e0e0; --pending-line: #000000;
+    --chart-a: #2b2b2b; --chart-b: #8e8e8e; --chart-grid: #dddddd; --surface: #ffffff;`;
+
 const STYLES = `
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 32px;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #111; background: #fff;
+    color: var(--ink); background: var(--paper);
   }
   .sheet { max-width: 8.5in; margin: 0 auto; }
-  header { border-bottom: 3px solid #111; padding-bottom: 16px; margin-bottom: 24px; }
+  header { border-bottom: 3px solid var(--rule-strong); padding-bottom: 16px; margin-bottom: 24px; }
   h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
-  h2 { font-size: 15px; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #444; }
-  .meta { color: #555; font-size: 13px; }
-  .meta strong { color: #111; }
+  h2 { font-size: 15px; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); }
+  .meta { color: var(--ink-3); font-size: 13px; }
+  .meta strong { color: var(--ink); }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 18px 0 4px; }
-  .stat { border: 1px solid #d5d5d5; border-radius: 6px; padding: 12px 14px; }
-  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; }
+  .stat { border: 1px solid var(--panel-line); border-radius: 6px; padding: 12px 14px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
   .stat .v { font-size: 21px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
-  .stat.accent { background: #f3f7f3; border-color: #b9cdb9; }
+  .stat.accent { background: var(--highlight); border-color: var(--highlight-line); }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e4e4e4; vertical-align: top; }
-  th { background: #f6f6f6; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #444; border-bottom: 1px solid #bbb; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--panel); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); border-bottom: 1px solid var(--panel-line); }
   td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.date, th.date { white-space: nowrap; }
-  tfoot td { font-weight: 650; border-top: 2px solid #111; border-bottom: none; }
-  .tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid #ccc; white-space: nowrap; }
-  .tag.business { background: #e8f2e8; border-color: #9ec09e; }
-  .tag.personal { background: #f0f0f0; }
-  .tag.commute { background: #fdf3e3; border-color: #ddc79b; }
-  .tag.unclassified { background: #fdeaea; border-color: #e0a6a6; }
-  .note { font-size: 12px; color: #444; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px 14px; }
+  tfoot td { font-weight: 650; border-top: 2px solid var(--rule-strong); border-bottom: none; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--panel-line); white-space: nowrap; }
+  .tag.business { background: var(--business-bg); border-color: var(--business-line); }
+  .tag.personal { background: var(--personal-bg); border-color: var(--personal-line); border-style: dashed; }
+  .tag.commute { background: var(--commute-bg); border-color: var(--commute-line); border-style: dotted; }
+  .tag.unclassified { background: var(--pending-bg); border-color: var(--pending-line); }
+  .note { font-size: 12px; color: var(--ink-2); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; }
   .note ul { margin: 8px 0 0; padding-left: 18px; }
   .note li { margin-bottom: 4px; }
   .sign { margin-top: 34px; display: flex; gap: 40px; }
-  .sign div { flex: 1; border-top: 1px solid #111; padding-top: 6px; font-size: 12px; color: #555; }
-  footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 11px; color: #777; }
+  .sign div { flex: 1; border-top: 1px solid var(--rule-strong); padding-top: 6px; font-size: 12px; color: var(--ink-3); }
+  footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 11px; color: var(--ink-3); }
   @media print {
     body { padding: 0; font-size: 11.5px; }
     h2 { margin-top: 20px; }
@@ -76,10 +99,30 @@ const STYLES = `
     .no-print { display: none; }
   }
   .no-print { margin-bottom: 18px; }
+  .chart { width: 100%; height: auto; display: block; max-width: 640px; }
+  .chart .axis { fill: var(--ink-3); font-size: 10px; }
+  .chart .grid { stroke: var(--chart-grid); stroke-width: 1; }
+  .chart .value { fill: var(--ink); font-size: 10.5px; font-weight: 650; }
+  .chart .bar-a { fill: var(--chart-a); }
+  .chart .hatch-bg { fill: var(--surface); }
+  .chart .hatch-line { stroke: var(--chart-b); stroke-width: 2.6; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 13px; height: 13px; border-radius: 3px; display: inline-block; border: 1px solid var(--panel-line); }
+  .legend .key-a { background: var(--chart-a); }
+  .legend .key-b { background: repeating-linear-gradient(45deg, var(--chart-b) 0 2px, var(--surface) 2px 5px); }
   .no-print button {
-    font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid #111;
-    background: #111; color: #fff; cursor: pointer;
+    font: inherit; padding: 10px 16px; border-radius: 6px; border: 1px solid var(--rule-strong);
+    background: var(--rule-strong); color: var(--paper); cursor: pointer; min-height: 44px;
   }
+  /* The category tag keeps a glyph, so a printed page still distinguishes the
+     categories when there is no colour at all. */
+  .tag::before { font-size: 9px; margin-right: 3px; }
+  .tag.business::before { content: "\\25CF"; }
+  .tag.personal::before { content: "\\25CB"; }
+  .tag.commute::before { content: "\\25D0"; }
+  .tag.unclassified::before { content: "?"; }
+  .scroll { overflow-x: auto; }
 `;
 
 function statBlock(label: string, value: string, accent = false): string {
@@ -114,6 +157,12 @@ export function renderReport(trips: Trip[], summary: Summary, options: ReportOpt
   const detailTrips = includePersonal
     ? trips
     : trips.filter((trip) => trip.classification !== 'personal');
+
+  const chartRows: ChartRow[] = summary.months.map((month) => ({
+    label: month.label.split(' ')[0]?.slice(0, 3) ?? month.month,
+    business: month.business.miles,
+    other: Math.round((month.totalMiles - month.business.miles) * 10) / 10,
+  }));
 
   const monthRows = summary.months
     .map(
@@ -174,11 +223,12 @@ export function renderReport(trips: Trip[], summary: Summary, options: ReportOpt
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
-<style>${STYLES}</style>
+<style>:root {${options.monochrome === true ? MONO_TOKENS : COLOUR_TOKENS}}${STYLES}</style>
+<script src="/app.js" defer></script>
 </head>
 <body>
 <div class="sheet">
-  <div class="no-print"><button onclick="window.print()">Print or save as PDF</button></div>
+  <div class="no-print"><button type="button" data-print>Print or save as PDF</button></div>
 
   <header>
     <h1>Vehicle Mileage Log</h1>
@@ -199,12 +249,20 @@ export function renderReport(trips: Trip[], summary: Summary, options: ReportOpt
     ${statBlock('Business trips', String(business.trips))}
   </div>
 
+  ${
+    chartRows.length < 2
+      ? ''
+      : `<h2>Miles by month</h2>
+  ${monthlyMilesChart(chartRows, { idPrefix: 'report' })}
+  ${chartLegend({ businessLabel: 'Business miles', otherLabel: 'Personal, commute and undecided' })}`
+  }
+
   <h2>Monthly totals</h2>
-  <table>
+  <div class="scroll"><table>
     <thead>
       <tr>
-        <th>Month</th><th class="n">Business</th><th class="n">Commute</th><th class="n">Personal</th>
-        <th class="n">Unclassified</th><th class="n">Total</th><th class="n">Business deduction</th>
+        <th scope="col">Month</th><th scope="col" class="n">Business</th><th scope="col" class="n">Commute</th><th scope="col" class="n">Personal</th>
+        <th scope="col" class="n">Unclassified</th><th scope="col" class="n">Total</th><th scope="col" class="n">Business deduction</th>
       </tr>
     </thead>
     <tbody>${monthRows === '' ? '<tr><td colspan="7">No trips in this period.</td></tr>' : monthRows}</tbody>
@@ -219,27 +277,27 @@ export function renderReport(trips: Trip[], summary: Summary, options: ReportOpt
         <td class="n">${money(summary.deduction)}</td>
       </tr>
     </tfoot>
-  </table>
+  </table></div>
 
   ${
     clientRows === ''
       ? ''
       : `<h2>Business miles by client or project</h2>
-  <table>
-    <thead><tr><th>Client / project</th><th class="n">Trips</th><th class="n">Miles</th><th class="n">Deduction</th></tr></thead>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Client / project</th><th scope="col" class="n">Trips</th><th scope="col" class="n">Miles</th><th scope="col" class="n">Deduction</th></tr></thead>
     <tbody>${clientRows}</tbody>
-  </table>`
+  </table></div>`
   }
 
   ${
     includeDetail
       ? `<h2>Trip detail${includePersonal ? '' : ' (business, commute and unclassified trips)'}</h2>
-  <table>
+  <div class="scroll"><table>
     <thead>
-      <tr><th class="date">Date</th><th class="n">Time</th><th>From</th><th>To</th><th class="n">Miles</th><th>Category</th><th>Purpose</th><th class="n">Deduction</th></tr>
+      <tr><th scope="col" class="date">Date</th><th scope="col" class="n">Time</th><th scope="col">From</th><th scope="col">To</th><th scope="col" class="n">Miles</th><th scope="col">Category</th><th scope="col">Purpose</th><th scope="col" class="n">Deduction</th></tr>
     </thead>
     <tbody>${detailRows === '' ? '<tr><td colspan="8">No trips in this period.</td></tr>' : detailRows}</tbody>
-  </table>`
+  </table></div>`
       : ''
   }
 

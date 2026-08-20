@@ -20,6 +20,8 @@ import { log } from '../lib/log.ts';
 const ENDPOINT = 'https://nominatim.openstreetmap.org/reverse';
 /** Nominatim's usage policy allows one request per second; leave headroom. */
 const MIN_SPACING_MS = 1500;
+/** A stalled lookup must not hold up the poller it runs inside. */
+const REQUEST_TIMEOUT_MS = 12_000;
 
 let lastRequestAt = 0;
 
@@ -61,9 +63,10 @@ export async function reverseGeocode(
   lastRequestAt = Date.now();
 
   const url = `${ENDPOINT}?format=jsonv2&addressdetails=1&zoom=18&lat=${point.latitude}&lon=${point.longitude}`;
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const response = await fetch(url, {
     headers: { 'user-agent': userAgent(contact), 'accept-language': 'en' },
-    signal,
+    signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
   });
   if (!response.ok) {
     log.warn(`reverse geocode failed with status ${response.status}`);

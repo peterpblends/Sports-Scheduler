@@ -9,7 +9,20 @@ import * as repo from '../db/repo.ts';
 import type { Place, Classification } from '../domain/types.ts';
 import type { Rule } from '../domain/classify.ts';
 import { summarize } from '../export/summary.ts';
-import { badge, card, emptyState, escape, layout, milesText, money, stat } from './ui.ts';
+import {
+  badge,
+  card,
+  checkField,
+  emptyState,
+  escape,
+  layout,
+  milesText,
+  money,
+  numberField,
+  selectField,
+  stat,
+  textField,
+} from './ui.ts';
 import { PERIOD_CHOICES, periodQuery, resolvePeriod, type Period } from './period.ts';
 import type { ViewContext } from './views.ts';
 import { localMonth, nowIso, humanAgo } from '../lib/time.ts';
@@ -23,57 +36,132 @@ const LABEL_HELP: Record<string, string> = {
   neutral: 'No opinion — let rules decide',
 };
 
-function placeForm(place: Partial<Place>, options: { action: string; returnTo: string; heading: string; submit: string }): string {
+function placeForm(
+  place: Partial<Place>,
+  options: { action: string; returnTo: string; heading: string; submit: string },
+): string {
   const kind = place.kind ?? 'address';
   const label = place.label ?? 'business';
   return `<form method="post" action="${escape(options.action)}">
     <input type="hidden" name="return" value="${escape(options.returnTo)}">
     <div class="fields two">
-      <div><label>Name</label><input name="name" required value="${escape(place.name ?? '')}" placeholder="Acme Warehouse, Home, all of Fargo"></div>
-      <div>
-        <label>What is this?</label>
-        <select name="kind">
-          <option value="address" ${kind === 'address' ? 'selected' : ''}>A specific address or site</option>
-          <option value="city" ${kind === 'city' ? 'selected' : ''}>A whole city or town</option>
-          <option value="region" ${kind === 'region' ? 'selected' : ''}>A whole state or region</option>
-        </select>
-      </div>
+      ${textField({
+        id: 'place-name',
+        name: 'name',
+        label: 'Name',
+        value: place.name ?? '',
+        placeholder: 'Acme Warehouse, Home, all of Fargo',
+        required: true,
+        autocomplete: 'off',
+      })}
+      ${selectField({
+        id: 'place-kind',
+        name: 'kind',
+        label: 'What is this?',
+        value: kind,
+        choices: [
+          { value: 'address', label: 'A specific address or site' },
+          { value: 'city', label: 'A whole city or town' },
+          { value: 'region', label: 'A whole state or region' },
+        ],
+      })}
     </div>
     <div class="fields two">
-      <div>
-        <label>How should trips here be treated?</label>
-        <select name="label">
-          ${(['business', 'personal', 'neutral'] as const)
-            .map((option) => `<option value="${option}" ${label === option ? 'selected' : ''}>${escape(option)} — ${escape(LABEL_HELP[option] ?? '')}</option>`)
-            .join('')}
-        </select>
-      </div>
-      <div><label>Default business purpose <span class="small">(optional)</span></label><input name="purpose" value="${escape(place.purpose ?? '')}" placeholder="Site supervision"></div>
+      ${selectField({
+        id: 'place-label',
+        name: 'label',
+        label: 'How should trips here be treated?',
+        value: label,
+        choices: (['business', 'personal', 'neutral'] as const).map((option) => ({
+          value: option,
+          label: `${option} — ${LABEL_HELP[option] ?? ''}`,
+        })),
+      })}
+      ${textField({
+        id: 'place-purpose',
+        name: 'purpose',
+        label: 'Default business purpose (optional)',
+        value: place.purpose ?? '',
+        placeholder: 'Site supervision',
+      })}
     </div>
     <div class="fields two">
-      <div><label>Client or project <span class="small">(optional)</span></label><input name="client" value="${escape(place.client ?? '')}"></div>
-      <div><label>Street address <span class="small">(optional, for the report)</span></label><input name="address" value="${escape(place.address ?? '')}"></div>
+      ${textField({
+        id: 'place-client',
+        name: 'client',
+        label: 'Client or project (optional)',
+        value: place.client ?? '',
+      })}
+      ${textField({
+        id: 'place-address',
+        name: 'address',
+        label: 'Street address (optional, for the report)',
+        value: place.address ?? '',
+        autocomplete: 'street-address',
+      })}
     </div>
     <div class="fields three">
-      <div><label>City</label><input name="city" value="${escape(place.city ?? '')}" placeholder="Fargo"></div>
-      <div><label>State or region</label><input name="region" value="${escape(place.region ?? '')}" placeholder="North Dakota"></div>
-      <div><label>Postal code</label><input name="postal" value="${escape(place.postal ?? '')}"></div>
+      ${textField({
+        id: 'place-city',
+        name: 'city',
+        label: 'City',
+        value: place.city ?? '',
+        placeholder: 'Fargo',
+        autocomplete: 'address-level2',
+      })}
+      ${textField({
+        id: 'place-region',
+        name: 'region',
+        label: 'State or region',
+        value: place.region ?? '',
+        placeholder: 'North Dakota',
+        autocomplete: 'address-level1',
+      })}
+      ${textField({
+        id: 'place-postal',
+        name: 'postal',
+        label: 'Postal code',
+        value: place.postal ?? '',
+        inputmode: 'numeric',
+        autocomplete: 'postal-code',
+      })}
     </div>
     <div class="fields three">
-      <div><label>Latitude</label><input name="latitude" value="${escape(place.latitude ?? '')}" placeholder="46.8772"></div>
-      <div><label>Longitude</label><input name="longitude" value="${escape(place.longitude ?? '')}" placeholder="-96.7898"></div>
-      <div>
-        <label>How close counts as "here"? (meters)</label>
-        <input name="radiusMeters" value="${escape(place.radiusMeters ?? 200)}">
-      </div>
+      ${numberField({
+        id: 'place-latitude',
+        name: 'latitude',
+        label: 'Latitude',
+        value: place.latitude ?? '',
+        placeholder: '46.8772',
+        decimal: true,
+      })}
+      ${numberField({
+        id: 'place-longitude',
+        name: 'longitude',
+        label: 'Longitude',
+        value: place.longitude ?? '',
+        placeholder: '-96.7898',
+        decimal: true,
+      })}
+      ${numberField({
+        id: 'place-radius',
+        name: 'radiusMeters',
+        label: 'How close counts as "here"? (meters)',
+        value: place.radiusMeters ?? 200,
+      })}
     </div>
     <div class="row" style="margin:4px 0 12px">
-      <div class="inline"><input type="checkbox" id="isHome" name="isHome" value="1" ${place.isHome === true ? 'checked' : ''}><label for="isHome">This is home</label></div>
-      <div class="inline"><input type="checkbox" id="isOffice" name="isPrimaryOffice" value="1" ${place.isPrimaryOffice === true ? 'checked' : ''}><label for="isOffice">This is my regular office</label></div>
+      ${checkField({ id: 'place-is-home', name: 'isHome', label: 'This is home', checked: place.isHome === true })}
+      ${checkField({
+        id: 'place-is-office',
+        name: 'isPrimaryOffice',
+        label: 'This is my regular office',
+        checked: place.isPrimaryOffice === true,
+      })}
     </div>
-    <div class="field"><label>Notes</label><input name="notes" value="${escape(place.notes ?? '')}"></div>
+    ${textField({ id: 'place-notes', name: 'notes', label: 'Notes', value: place.notes ?? '' })}
     <p class="small">Marking home and a regular office lets the app separate commuting, which the IRS does not allow as a deduction, from business driving that it does.</p>
-    <button class="primary" type="submit">${escape(options.submit)}</button>
+    <button class="primary" type="submit" data-busy="Saving…">${escape(options.submit)}</button>
   </form>`;
 }
 
@@ -111,7 +199,7 @@ export function placesPage(context: ViewContext, params: { editing?: number; pre
                   <a class="btn small" href="/places?edit=${place.id}">Edit</a>
                   <a class="btn small" href="/trips?place=${place.id}">Trips</a>
                   <form method="post" action="/places/${place.id}/delete" class="inlineform">
-                    <button class="small danger" type="submit" onclick="return confirm('Remove this label? Past trips keep their categories unless you re-run the classifier.')">Remove</button>
+                    <button class="small danger" type="submit" data-confirm="Remove this label? Past trips keep their categories unless you re-run the classifier.">Remove</button>
                   </form>
                 </div>
               </div>
@@ -154,7 +242,15 @@ export function placesPage(context: ViewContext, params: { editing?: number; pre
           )
     }
   `;
-  return layout({ title: 'Places', nav: 'places', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Places',
+    nav: 'places',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: context.settings.appearance,
+    colour: context.settings.colour,
+  });
 }
 
 const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -207,16 +303,12 @@ export function rulesPage(context: ViewContext): string {
               <button class="small" type="submit">${rule.enabled ? 'Turn off' : 'Turn on'}</button>
             </form>
             <form method="post" action="/rules/${rule.id}/delete" class="inlineform">
-              <button class="small danger" type="submit" onclick="return confirm('Delete this rule?')">Delete</button>
+              <button class="small danger" type="submit" data-confirm="Delete this rule?">Delete</button>
             </form>
           </div>
         </div>
       </div>`,
     )
-    .join('');
-
-  const placeOptions = places
-    .map((place) => `<option value="${place.id}">${escape(place.name)}</option>`)
     .join('');
 
   const suggestionRows = suggestions
@@ -247,53 +339,80 @@ export function rulesPage(context: ViewContext): string {
     ${card(
       `<form method="post" action="/rules">
         <div class="fields two">
-          <div><label>Name this rule</label><input name="name" required placeholder="Saturdays are personal"></div>
-          <div>
-            <label>Then record the trip as</label>
-            <select name="classification">
-              ${(['business', 'personal', 'commute', 'medical', 'charity'] as Classification[])
-                .map((option) => `<option value="${option}">${escape(option)}</option>`)
-                .join('')}
-            </select>
-          </div>
+          ${textField({
+            id: 'rule-name',
+            name: 'name',
+            label: 'Name this rule',
+            placeholder: 'Saturdays are personal',
+            required: true,
+          })}
+          ${selectField({
+            id: 'rule-classification',
+            name: 'classification',
+            label: 'Then record the trip as',
+            value: 'business',
+            choices: (['business', 'personal', 'commute', 'medical', 'charity'] as Classification[]).map(
+              (option) => ({ value: option, label: option }),
+            ),
+          })}
         </div>
         <h3 style="margin-top:14px">Only when…</h3>
         <div class="fields two">
-          <div><label>Starts at</label><select name="startPlaceId"><option value="">anywhere</option>${placeOptions}</select></div>
-          <div><label>Ends at</label><select name="endPlaceId"><option value="">anywhere</option>${placeOptions}</select></div>
+          ${selectField({
+            id: 'rule-start-place',
+            name: 'startPlaceId',
+            label: 'Starts at',
+            value: '',
+            choices: [{ value: '', label: 'anywhere' }, ...places.map((place) => ({ value: String(place.id), label: place.name }))],
+          })}
+          ${selectField({
+            id: 'rule-end-place',
+            name: 'endPlaceId',
+            label: 'Ends at',
+            value: '',
+            choices: [{ value: '', label: 'anywhere' }, ...places.map((place) => ({ value: String(place.id), label: place.name }))],
+          })}
         </div>
         <div class="fields two">
-          <div><label>City is</label><input name="city" placeholder="Fargo"></div>
-          <div><label>State or region is</label><input name="region" placeholder="North Dakota"></div>
+          ${textField({ id: 'rule-city', name: 'city', label: 'City is', placeholder: 'Fargo' })}
+          ${textField({ id: 'rule-region', name: 'region', label: 'State or region is', placeholder: 'North Dakota' })}
         </div>
-        <div class="field">
-          <label>Days of the week</label>
+        <fieldset>
+          <legend>Days of the week</legend>
           <div class="chips">
             ${WEEKDAY_NAMES.map(
               (day, index) =>
-                `<span class="inline"><input type="checkbox" id="wd${index}" name="weekdays" value="${index}"><label for="wd${index}">${day}</label></span>`,
+                `<label class="chip"><input type="checkbox" name="weekdays" value="${index}"><span>${day}</span></label>`,
             ).join('')}
           </div>
-        </div>
+        </fieldset>
         <div class="fields three">
-          <div><label>Not before (local time)</label><input name="after" type="time"></div>
-          <div><label>Not after (local time)</label><input name="before" type="time"></div>
-          <div><label>Priority <span class="small">(lower runs first)</span></label><input name="priority" value="100"></div>
+          ${textField({ id: 'rule-after', name: 'after', label: 'Not before (local time)', type: 'time' })}
+          ${textField({ id: 'rule-before', name: 'before', label: 'Not after (local time)', type: 'time' })}
+          ${numberField({ id: 'rule-priority', name: 'priority', label: 'Priority (lower runs first)', value: 100 })}
         </div>
         <div class="fields two">
-          <div><label>At least this many miles</label><input name="minMiles" placeholder=""></div>
-          <div><label>At most this many miles</label><input name="maxMiles" placeholder=""></div>
+          ${numberField({ id: 'rule-min-miles', name: 'minMiles', label: 'At least this many miles', decimal: true })}
+          ${numberField({ id: 'rule-max-miles', name: 'maxMiles', label: 'At most this many miles', decimal: true })}
         </div>
         <div class="fields two">
-          <div><label>Set business purpose to</label><input name="purpose"></div>
-          <div><label>Set client or project to</label><input name="client"></div>
+          ${textField({ id: 'rule-purpose', name: 'purpose', label: 'Set business purpose to' })}
+          ${textField({ id: 'rule-client', name: 'client', label: 'Set client or project to' })}
         </div>
-        <button class="primary" type="submit">Add this rule</button>
+        <button class="primary" type="submit" data-busy="Adding…">Add this rule</button>
       </form>`,
       { title: 'Add a rule' },
     )}
   `;
-  return layout({ title: 'Rules', nav: 'rules', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Rules',
+    nav: 'rules',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: context.settings.appearance,
+    colour: context.settings.colour,
+  });
 }
 
 export function exportPage(context: ViewContext, period: Period): string {
@@ -320,12 +439,13 @@ export function exportPage(context: ViewContext, period: Period): string {
                   <div class="small">Created ${escape(humanAgo(share.createdAt))}${share.lastUsedAt === null ? ' · never opened' : ` · last opened ${escape(humanAgo(share.lastUsedAt))}`}</div>
                 </div>
                 <form method="post" action="/share/${escape(share.token)}/revoke" class="inlineform">
-                  <button class="small danger" type="submit" onclick="return confirm('Revoke this link? Anyone holding it loses access immediately.')">Revoke</button>
+                  <button class="small danger" type="submit" data-confirm="Revoke this link? Anyone holding it loses access immediately.">Revoke</button>
                 </form>
               </div>
               <div class="copy" style="margin-top:8px">
+                <label class="small" for="share-${escape(share.token)}" style="position:absolute;left:-9999px">Link for ${escape(share.name)}</label>
                 <input id="share-${escape(share.token)}" readonly value="${escape(shareUrl(context, share.token))}">
-                <button class="small" type="button" onclick="mlCopy('share-${escape(share.token)}', this)">Copy</button>
+                <button class="small" type="button" data-copy="share-${escape(share.token)}">Copy</button>
               </div>
             </div>`,
           )
@@ -339,8 +459,8 @@ export function exportPage(context: ViewContext, period: Period): string {
     <section class="card tight"><div class="chips">${periodChips}</div>
       <form method="get" action="/export" class="row" style="margin-top:10px">
         <input type="hidden" name="period" value="custom">
-        <div><label>From</label><input type="date" name="from" value="${escape(period.rawFrom ?? '')}"></div>
-        <div><label>To</label><input type="date" name="to" value="${escape(period.rawTo ?? '')}"></div>
+        <div style="flex:1 1 150px">${textField({ id: 'export-from', name: 'from', label: 'From', type: 'date', value: period.rawFrom ?? '' })}</div>
+        <div style="flex:1 1 150px">${textField({ id: 'export-to', name: 'to', label: 'To', type: 'date', value: period.rawTo ?? '' })}</div>
         <div style="align-self:end"><button class="small" type="submit">Use these dates</button></div>
       </form>
     </section>
@@ -382,8 +502,15 @@ export function exportPage(context: ViewContext, period: Period): string {
       `<p class="small">A link your accountant can open any time to see the current report and download the spreadsheets. It is read-only: it cannot change a category, and it shows nothing else in the app. Revoke it whenever you like.</p>
        ${shareRows}
        <form method="post" action="/share" class="row" style="margin-top:12px">
-         <input name="name" placeholder="Name it, e.g. CPA — tax year 2026" style="flex:1;min-width:200px">
-         <button class="primary small" type="submit">Create a link</button>
+         <div style="flex:1 1 220px">
+           ${textField({
+             id: 'share-name',
+             name: 'name',
+             label: 'What is this link for?',
+             placeholder: 'CPA — tax year 2026',
+           })}
+         </div>
+         <div style="align-self:end"><button class="primary small" type="submit" data-busy="Creating…">Create a link</button></div>
        </form>
        ${
          context.settings.connector === 'demo'
@@ -393,7 +520,15 @@ export function exportPage(context: ViewContext, period: Period): string {
       { title: 'A standing link for your CPA' },
     )}
   `;
-  return layout({ title: 'Export', nav: 'export', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Export',
+    nav: 'export',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: context.settings.appearance,
+    colour: context.settings.colour,
+  });
 }
 
 /**
@@ -403,6 +538,124 @@ export function exportPage(context: ViewContext, period: Period): string {
 function shareUrl(context: ViewContext, token: string): string {
   const configured = (context.db.setting('base_url') ?? config.baseUrl).replace(/\/$/, '');
   return `${configured}/share/${token}`;
+}
+
+
+/** Theme and colour, as two independent choices. */
+export function appearanceCard(settings: { appearance: string; colour: string }): string {
+  const themes: { value: string; label: string; hint: string }[] = [
+    { value: 'system', label: 'Follow device', hint: 'light or dark to match your phone or computer' },
+    { value: 'light', label: 'Light', hint: 'always light' },
+    { value: 'dark', label: 'Dark', hint: 'always dark' },
+  ];
+  const colours: { value: string; label: string; hint: string }[] = [
+    { value: 'colour', label: 'Full colour', hint: 'green for business, amber for commuting' },
+    { value: 'mono', label: 'Black and white', hint: 'no colour anywhere; categories are shown by shape and label' },
+  ];
+
+  const group = (
+    name: string,
+    current: string,
+    choices: { value: string; label: string; hint: string }[],
+  ): string =>
+    `<div class="chips" role="radiogroup">
+      ${choices
+        .map(
+          (choice) => `<label class="chip">
+            <input type="radio" name="${name}" value="${escape(choice.value)}" ${current === choice.value ? 'checked' : ''}>
+            <span>${escape(choice.label)}</span>
+          </label>`,
+        )
+        .join('')}
+    </div>
+    <div class="small" style="margin-top:6px">${escape(choices.find((choice) => choice.value === current)?.hint ?? '')}</div>`;
+
+  return card(
+    `<form method="post" action="/appearance" data-autosubmit>
+      <fieldset>
+        <legend>Theme</legend>
+        ${group('appearance', settings.appearance, themes)}
+      </fieldset>
+      <fieldset>
+        <legend>Colour</legend>
+        ${group('colour', settings.colour, colours)}
+      </fieldset>
+      <div class="swatches" aria-hidden="true">
+        <span class="swatch ink"></span><span class="swatch accent"></span>
+        <span class="swatch business"></span><span class="swatch commute"></span><span class="swatch pending"></span>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" type="submit">Save appearance</button>
+        <span class="small">Saved with your ledger, so it stays put after a refresh, a sign-out, or a restart.</span>
+      </div>
+    </form>`,
+    { title: 'Appearance' },
+  );
+}
+
+/**
+ * Everything that does not earn a slot in the phone navigation bar.
+ *
+ * A real page rather than a pop-out menu: it works without JavaScript, it can be
+ * bookmarked, and the back button behaves.
+ */
+export function morePage(context: ViewContext, options: { passcodeSet: boolean }): string {
+  const { db, settings } = context;
+  const reviewCount = repo.countTrips(db, { needsReview: true });
+  const suggestions = repo.listSuggestions(db).length;
+
+  const tile = (href: string, icon: string, title: string, detail: string, badgeText?: string): string =>
+    `<a class="tile" href="${escape(href)}">
+      <span class="ico" aria-hidden="true">${icon}</span>
+      <span>
+        <strong>${escape(title)} ${badgeText === undefined ? '' : `<span class="badge unclassified">${escape(badgeText)}</span>`}</strong>
+        <span class="small">${escape(detail)}</span>
+      </span>
+    </a>`;
+
+  const body = `
+    <div class="head"><h1>More</h1><div class="small">Everything not on the bar at the bottom.</div></div>
+
+    <div class="tiles">
+      ${tile('/trips?review=1', '◔', 'Trips needing a decision', reviewCount === 0 ? 'Nothing waiting on you' : `${reviewCount} to sort out`, reviewCount === 0 ? undefined : String(reviewCount))}
+      ${tile('/rules', '⚙', 'Rules', suggestions === 0 ? 'How trips are categorised automatically' : `${suggestions} pattern${suggestions === 1 ? '' : 's'} waiting for approval`)}
+      ${tile('/places', '⌖', 'Places', 'Label the addresses and cities you drive to')}
+      ${tile('/connect', '⇄', 'The car', `Currently reading from: ${settings.connector}`)}
+      ${tile('/settings', '⚑', 'Settings', 'Appearance, time zone, IRS rates, import, passcode')}
+      ${tile('/export', '↧', 'Export', 'Reports and spreadsheets for your accountant')}
+    </div>
+
+    ${appearanceCard(settings)}
+
+    ${card(
+      `<div class="row between">
+        <div>
+          <strong>${options.passcodeSet ? 'This ledger is locked with a passcode' : 'No passcode set'}</strong>
+          <div class="small">${
+            options.passcodeSet
+              ? 'Signing out will ask for it again next time.'
+              : 'The app only accepts connections from this machine. Set a passcode in Settings before exposing it to your network.'
+          }</div>
+        </div>
+        ${
+          options.passcodeSet
+            ? `<form method="post" action="/logout"><button type="submit" data-confirm="Sign out of this ledger?">Sign out</button></form>`
+            : `<a class="btn" href="/settings">Set a passcode</a>`
+        }
+      </div>`,
+      { title: 'Access' },
+    )}
+  `;
+
+  return layout({
+    title: 'More',
+    nav: 'more',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: settings.appearance,
+    colour: settings.colour,
+  });
 }
 
 export function settingsPage(context: ViewContext, options: { passcodeSet: boolean }): string {
@@ -427,66 +680,125 @@ export function settingsPage(context: ViewContext, options: { passcodeSet: boole
   const body = `
     <div class="head"><h1>Settings</h1><div class="small">Everything is stored on this machine, in one file.</div></div>
 
+    ${appearanceCard(settings)}
+
     ${card(
       `<form method="post" action="/settings">
         <div class="fields two">
-          <div><label>Business name <span class="small">(printed on the report)</span></label><input name="business_name" value="${escape(settings.businessName)}"></div>
-          <div><label>Your name</label><input name="owner_name" value="${escape(settings.ownerName)}"></div>
+          ${textField({
+            id: 'business_name',
+            label: 'Business name (printed on the report)',
+            value: settings.businessName,
+            autocomplete: 'organization',
+          })}
+          ${textField({
+            id: 'owner_name',
+            label: 'Your name',
+            value: settings.ownerName,
+            autocomplete: 'name',
+          })}
         </div>
         <div class="fields two">
-          <div><label>Vehicle description</label><input name="vehicle_description" value="${escape(settings.vehicleDescription)}" placeholder="2024 Tesla Model Y"></div>
-          <div><label>Time zone <span class="small">(decides which day a trip lands on)</span></label><input name="timezone" value="${escape(settings.timezone)}" placeholder="America/Chicago"></div>
+          ${textField({
+            id: 'vehicle_description',
+            label: 'Vehicle description',
+            value: settings.vehicleDescription,
+            placeholder: '2024 Tesla Model Y',
+          })}
+          ${textField({
+            id: 'timezone',
+            label: 'Time zone',
+            value: settings.timezone,
+            placeholder: 'America/Chicago',
+            hint: 'Decides which day — and which tax year — a trip falls in. Use a name like America/Chicago.',
+          })}
         </div>
         <h3 style="margin-top:16px">How to treat a trip nothing explains</h3>
         <div class="fields two">
-          <div>
-            <label>Unmatched trips become</label>
-            <select name="fallback_classification">
-              ${(['unclassified', 'personal', 'business'] as Classification[])
-                .map((option) => `<option value="${option}" ${settings.fallback === option ? 'selected' : ''}>${escape(option === 'unclassified' ? 'unclassified — ask me' : option)}</option>`)
-                .join('')}
-            </select>
-          </div>
-          <div>
-            <label>Home to the regular office is</label>
-            <select name="commute_handling">
-              <option value="commute" ${settings.commuteHandling === 'commute' ? 'selected' : ''}>commute — tracked, not deducted (IRS treatment)</option>
-              <option value="personal" ${settings.commuteHandling === 'personal' ? 'selected' : ''}>personal</option>
-              <option value="business" ${settings.commuteHandling === 'business' ? 'selected' : ''}>business — only if your accountant says so</option>
-            </select>
-          </div>
+          ${selectField({
+            id: 'fallback_classification',
+            label: 'Unmatched trips become',
+            value: settings.fallback,
+            choices: (['unclassified', 'personal', 'business'] as Classification[]).map((option) => ({
+              value: option,
+              label: option === 'unclassified' ? 'unclassified — ask me' : option,
+            })),
+          })}
+          ${selectField({
+            id: 'commute_handling',
+            label: 'Home to the regular office is',
+            value: settings.commuteHandling,
+            choices: [
+              { value: 'commute', label: 'commute — tracked, not deducted (IRS treatment)' },
+              { value: 'personal', label: 'personal' },
+              { value: 'business', label: 'business — only if your accountant says so' },
+            ],
+          })}
         </div>
         <h3 style="margin-top:16px">Learning</h3>
         <div class="fields three">
-          <div><label>Corrections before a pattern is proposed</label><input name="learn_min_observations" value="${settings.learnMinObservations}"></div>
-          <div><label>Agreement required (0–1)</label><input name="learn_agreement" value="${settings.learnAgreement}"></div>
-          <div>
-            <label>Apply learned patterns</label>
-            <select name="auto_apply_learned">
-              <option value="0" ${settings.autoApplyLearned ? '' : 'selected'}>only after I approve them</option>
-              <option value="1" ${settings.autoApplyLearned ? 'selected' : ''}>automatically, without asking</option>
-            </select>
-          </div>
+          ${numberField({
+            id: 'learn_min_observations',
+            label: 'Corrections before a pattern is proposed',
+            value: settings.learnMinObservations,
+          })}
+          ${numberField({
+            id: 'learn_agreement',
+            label: 'Agreement required (0–1)',
+            value: settings.learnAgreement,
+            decimal: true,
+          })}
+          ${selectField({
+            id: 'auto_apply_learned',
+            label: 'Apply learned patterns',
+            value: settings.autoApplyLearned ? '1' : '0',
+            choices: [
+              { value: '0', label: 'only after I approve them' },
+              { value: '1', label: 'automatically, without asking' },
+            ],
+          })}
         </div>
         <h3 style="margin-top:16px">Reading the car</h3>
         <div class="fields three">
-          <div><label>While driving, read every (seconds)</label><input name="poll_driving_seconds" value="${settings.pollDrivingSeconds}"></div>
-          <div><label>While parked and awake (seconds)</label><input name="poll_awake_seconds" value="${settings.pollAwakeSeconds}"></div>
-          <div><label>While asleep (seconds)</label><input name="poll_asleep_seconds" value="${settings.pollAsleepSeconds}"></div>
+          ${numberField({
+            id: 'poll_driving_seconds',
+            label: 'While driving, read every (seconds)',
+            value: settings.pollDrivingSeconds,
+          })}
+          ${numberField({
+            id: 'poll_awake_seconds',
+            label: 'While parked and awake (seconds)',
+            value: settings.pollAwakeSeconds,
+          })}
+          ${numberField({
+            id: 'poll_asleep_seconds',
+            label: 'While asleep (seconds)',
+            value: settings.pollAsleepSeconds,
+          })}
         </div>
         <div class="fields three">
-          <div><label>Monthly API credit ceiling</label><input name="credit_budget" value="${settings.creditBudget}"></div>
-          <div>
-            <label>Look up street addresses</label>
-            <select name="geocode_enabled">
-              <option value="1" ${settings.geocodeEnabled ? 'selected' : ''}>yes — use OpenStreetMap (free)</option>
-              <option value="0" ${settings.geocodeEnabled ? '' : 'selected'}>no — coordinates only, nothing leaves this machine</option>
-            </select>
-          </div>
-          <div><label>Keep raw readings for (days)</label><input name="sample_retention_days" value="${settings.sampleRetentionDays}"></div>
+          ${numberField({
+            id: 'credit_budget',
+            label: 'Monthly API credit ceiling',
+            value: settings.creditBudget,
+          })}
+          ${selectField({
+            id: 'geocode_enabled',
+            label: 'Look up street addresses',
+            value: settings.geocodeEnabled ? '1' : '0',
+            choices: [
+              { value: '1', label: 'yes — use OpenStreetMap (free)' },
+              { value: '0', label: 'no — coordinates only, nothing leaves this machine' },
+            ],
+          })}
+          ${numberField({
+            id: 'sample_retention_days',
+            label: 'Keep raw readings for (days)',
+            value: settings.sampleRetentionDays,
+          })}
         </div>
         <p class="small">Reads while the car is asleep come from Tesla's cache and are not billed, which is why the asleep interval can stay slow without losing miles — the odometer still tells the whole story. Estimated usage this month: ${usage.credits} credits over ${usage.calls} reads.</p>
-        <button class="primary" type="submit">Save settings</button>
+        <button class="primary" type="submit" data-busy="Saving…">Save settings</button>
       </form>`,
       { title: 'How the ledger behaves' },
     )}
@@ -505,21 +817,21 @@ export function settingsPage(context: ViewContext, options: { passcodeSet: boole
 
     ${card(
       `<div class="scroll"><table>
-        <thead><tr><th>From</th><th>To</th><th class="n">Business ¢/mi</th><th class="n">Medical</th><th class="n">Charity</th><th>Source</th></tr></thead>
+        <thead><tr><th scope="col">From</th><th scope="col">To</th><th scope="col" class="n">Business ¢/mi</th><th scope="col" class="n">Medical</th><th scope="col" class="n">Charity</th><th scope="col">Source</th></tr></thead>
         <tbody>${rateRows}</tbody>
       </table></div>
       <form method="post" action="/settings/rates" style="margin-top:12px">
         <div class="fields three">
-          <div><label>Effective from</label><input type="date" name="from" required></div>
-          <div><label>Effective to</label><input type="date" name="to" required></div>
-          <div><label>Business cents per mile</label><input name="business" required placeholder="76"></div>
+          ${textField({ id: 'rate-from', name: 'from', label: 'Effective from', type: 'date', required: true })}
+          ${textField({ id: 'rate-to', name: 'to', label: 'Effective to', type: 'date', required: true })}
+          ${numberField({ id: 'rate-business', name: 'business', label: 'Business cents per mile', placeholder: '76', required: true, decimal: true })}
         </div>
         <div class="fields three">
-          <div><label>Medical cents</label><input name="medical" placeholder="23.5"></div>
-          <div><label>Charity cents</label><input name="charity" placeholder="14"></div>
-          <div><label>Note</label><input name="note" placeholder="IRS Notice"></div>
+          ${numberField({ id: 'rate-medical', name: 'medical', label: 'Medical cents', placeholder: '23.5', decimal: true })}
+          ${numberField({ id: 'rate-charity', name: 'charity', label: 'Charity cents', placeholder: '14', decimal: true })}
+          ${textField({ id: 'rate-note', name: 'note', label: 'Note', placeholder: 'IRS Notice' })}
         </div>
-        <button type="submit">Add or update a rate</button>
+        <button type="submit" data-busy="Saving…">Add or update a rate</button>
       </form>
       <p class="small">Rates ship with the app but are editable, because the IRS changes them — sometimes in the middle of a year. Confirm against irs.gov or with your accountant.</p>`,
       { title: 'IRS standard mileage rates' },
@@ -528,8 +840,14 @@ export function settingsPage(context: ViewContext, options: { passcodeSet: boole
     ${card(
       `<form method="post" action="/settings/passcode">
         <div class="fields two">
-          <div><label>${options.passcodeSet ? 'New passcode' : 'Set a passcode'}</label><input type="password" name="passcode" placeholder="${options.passcodeSet ? 'leave blank to remove' : 'protects the ledger'}"></div>
-          <div style="align-self:end"><button class="primary" type="submit">${options.passcodeSet ? 'Change passcode' : 'Set passcode'}</button></div>
+          ${textField({
+            id: 'passcode',
+            label: options.passcodeSet ? 'New passcode' : 'Set a passcode',
+            type: 'password',
+            placeholder: options.passcodeSet ? 'leave blank to remove' : 'protects the ledger',
+            autocomplete: 'new-password',
+          })}
+          <div style="align-self:end"><button class="primary" type="submit" data-busy="Saving…">${options.passcodeSet ? 'Change passcode' : 'Set passcode'}</button></div>
         </div>
       </form>
       <p class="small">${
@@ -541,23 +859,31 @@ export function settingsPage(context: ViewContext, options: { passcodeSet: boole
     )}
 
     ${card(
-      `<form method="post" action="/import">
+      `<form method="post" action="/import" id="import-form">
         <div class="field">
-          <label>Load a CSV file</label>
-          <input type="file" accept=".csv,text/csv" onchange="mlReadFile(this, 'csv-body')">
-          <div class="small" id="csv-body-name"></div>
+          <label for="csv-file">Load a CSV file</label>
+          <input type="file" id="csv-file" accept=".csv,text/csv" data-file-into="csv-body">
+          <div class="small" id="csv-body-name" role="status"></div>
         </div>
         <div class="field">
-          <label>…or paste the rows here</label>
-          <textarea id="csv-body" name="csv" placeholder="timestamp,odometer,latitude,longitude&#10;2026-01-04 08:12:00,41230.4,46.8772,-96.7898"></textarea>
+          <label for="csv-body">…or paste the rows here</label>
+          <textarea id="csv-body" name="csv" rows="6" spellcheck="false" placeholder="timestamp,odometer,latitude,longitude&#10;2026-01-04 08:12:00,41230.4,46.8772,-96.7898"></textarea>
         </div>
-        <button class="primary" type="submit">Import</button>
+        <button class="primary" type="submit" data-busy="Importing…">Import</button>
       </form>
       <p class="small">Two shapes are understood, and the file is inspected to work out which: a log of <strong>readings</strong> (a timestamp and an odometer, optionally coordinates), or one row per <strong>completed trip</strong> (start, end, distance, and a category if you have one). Readings go through the same processing as live data. Times without a zone are read in ${escape(settings.timezone)}.</p>`,
-      { title: 'Bring in history from elsewhere' },
+      { title: 'Bring in history from elsewhere', id: 'import' },
     )}
   `;
-  return layout({ title: 'Settings', nav: 'settings', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Settings',
+    nav: 'settings',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: context.settings.appearance,
+    colour: context.settings.colour,
+  });
 }
 
 export function connectPage(context: ViewContext, options: { baseUrl: string; hasFleetApp: boolean }): string {
@@ -585,10 +911,22 @@ export function connectPage(context: ViewContext, options: { baseUrl: string; ha
          options.hasFleetApp
            ? `<div class="row">
                 <a class="btn primary" href="/connect/oauth/start">Sign in with Tesla</a>
-                <form method="post" action="/connect/register" class="row inlineform">
-                  <input name="domain" placeholder="your-domain.com" style="width:auto">
-                  <select name="region" style="width:auto">${regions.map((region) => `<option value="${region}">${escape(region.toUpperCase())}</option>`).join('')}</select>
-                  <button type="submit">Register the domain</button>
+                <form method="post" action="/connect/register" class="row">
+                  <div style="flex:1 1 200px">${textField({
+                    id: 'register-domain',
+                    name: 'domain',
+                    label: 'Domain serving your public key',
+                    placeholder: 'your-domain.com',
+                    extraAttributes: 'spellcheck="false"',
+                  })}</div>
+                  <div style="flex:0 1 120px">${selectField({
+                    id: 'register-region',
+                    name: 'region',
+                    label: 'Region',
+                    value: 'na',
+                    choices: regions.map((region) => ({ value: region, label: region.toUpperCase() })),
+                  })}</div>
+                  <div style="align-self:end"><button type="submit" data-busy="Registering…">Register the domain</button></div>
                 </form>
               </div>`
            : `<div class="notice warn">No client ID is configured yet. Add <code>TESLA_CLIENT_ID</code> and <code>TESLA_CLIENT_SECRET</code> to <code>.env</code> and restart, or use one of the options below.</div>`
@@ -600,17 +938,33 @@ export function connectPage(context: ViewContext, options: { baseUrl: string; ha
       `<p>If you already have a Tesla refresh token from another tool, paste it here. Nothing else is needed: no domain, no developer application. This route uses Tesla's older owner interface, which community tools have relied on for years but which Tesla does not officially support and could change.</p>
        <form method="post" action="/connect/token">
          <div class="fields two">
-           <div><label>Refresh token</label><input name="refreshToken" required placeholder="eyJ..."></div>
-           <div>
-             <label>Which interface is this token for?</label>
-             <select name="mode">
-               <option value="owner">Owner API (tokens from third-party token apps)</option>
-               <option value="fleet">Fleet API (a token from your own developer app)</option>
-             </select>
-           </div>
+           ${textField({
+             id: 'refresh-token',
+             name: 'refreshToken',
+             label: 'Refresh token',
+             placeholder: 'eyJ...',
+             required: true,
+             extraAttributes: 'spellcheck="false"',
+           })}
+           ${selectField({
+             id: 'token-mode',
+             name: 'mode',
+             label: 'Which interface is this token for?',
+             value: 'owner',
+             choices: [
+               { value: 'owner', label: 'Owner API (tokens from third-party token apps)' },
+               { value: 'fleet', label: 'Fleet API (a token from your own developer app)' },
+             ],
+           })}
          </div>
-         <div class="field"><label>Region</label><select name="region" style="width:auto">${regions.map((region) => `<option value="${region}">${escape(region.toUpperCase())}</option>`).join('')}</select></div>
-         <button class="primary" type="submit">Save the token and start reading</button>
+         ${selectField({
+           id: 'token-region',
+           name: 'region',
+           label: 'Region',
+           value: 'na',
+           choices: regions.map((region) => ({ value: region, label: region.toUpperCase() })),
+         })}
+         <button class="primary" type="submit" data-busy="Connecting…">Save the token and start reading</button>
        </form>`,
       { title: 'Option 2 — paste a refresh token' },
     )}
@@ -630,10 +984,22 @@ export function connectPage(context: ViewContext, options: { baseUrl: string; ha
       { title: 'Option 4 — files only' },
     )}
   `;
-  return layout({ title: 'Connect', nav: 'settings', body, status: context.status, flash: context.flash });
+  return layout({
+    title: 'Connect',
+    nav: 'settings',
+    body,
+    status: context.status,
+    flash: context.flash,
+    appearance: context.settings.appearance,
+    colour: context.settings.colour,
+  });
 }
 
-export function loginPage(options: { error: string | null }): string {
+export function loginPage(options: {
+  error: string | null;
+  appearance?: 'system' | 'light' | 'dark';
+  colour?: 'colour' | 'mono';
+}): string {
   const body = `
     <div style="max-width:380px;margin:8vh auto">
       ${card(
@@ -641,10 +1007,26 @@ export function loginPage(options: { error: string | null }): string {
          <p class="small">Enter your passcode to open the ledger.</p>
          ${options.error === null ? '' : `<div class="notice alert">${escape(options.error)}</div>`}
          <form method="post" action="/login">
-           <div class="field"><label>Passcode</label><input type="password" name="passcode" autofocus required></div>
-           <button class="primary" type="submit" style="width:100%">Open</button>
+           ${textField({
+             id: 'login-passcode',
+             name: 'passcode',
+             label: 'Passcode',
+             type: 'password',
+             required: true,
+             autocomplete: 'current-password',
+             extraAttributes: 'autofocus',
+           })}
+           <button class="primary" type="submit" style="width:100%" data-busy="Opening…">Open</button>
          </form>`,
       )}
     </div>`;
-  return layout({ title: 'Sign in', nav: null, body, status: null, flash: null });
+  return layout({
+    title: 'Sign in',
+    nav: null,
+    body,
+    status: null,
+    flash: null,
+    appearance: options.appearance ?? 'system',
+    colour: options.colour ?? 'colour',
+  });
 }

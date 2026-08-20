@@ -110,6 +110,10 @@ export const migrations: string[] = [
   CREATE INDEX trip_started ON trip(started_at);
   CREATE INDEX trip_review ON trip(needs_review, deleted_at);
   CREATE INDEX trip_signature ON trip(signature);
+  -- The trip list filters by category and by date, and the overlap check walks
+  -- a narrow window of (vehicle, started_at).
+  CREATE INDEX trip_vehicle_started ON trip(vehicle_id, started_at, deleted_at);
+  CREATE INDEX trip_classification ON trip(classification, deleted_at, started_at);
 
   -- Declarative classification rules. "conditions" is JSON; see domain/classify.ts.
   CREATE TABLE rule (

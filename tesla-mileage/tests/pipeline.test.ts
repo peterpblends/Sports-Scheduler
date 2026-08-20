@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db/index.ts';
 import * as repo from '../src/db/repo.ts';
-import { SETTING_KEYS } from '../src/settings.ts';
+import { SETTING_KEYS, writeSettings, readSettings } from '../src/settings.ts';
 import {
   rebuildTrips,
   reclassifyAll,
@@ -356,4 +356,94 @@ test('a purpose you typed is kept; one derived from a label refreshes when label
   // Typed by hand, so nothing automatic touches it.
   assert.equal(typed.purpose, 'Bought job-site supplies');
   assert.equal(typed.client, 'Mine');
+});
+
+test('a drive that turns out to have started earlier stays one trip, not two', () => {
+  // The tax-relevant case: readings arrive late or out of order, the stitcher
+  // places the same drive a few minutes earlier, and the miles must not be
+  // counted twice.
+  const { db, vehicleId } = fresh();
+  const iso = (minute: number) => new Date(BASE + minute * 60_000).toISOString();
+  const reading = (minute: number, odometer: number, shift: string, spot: typeof HOME) => ({
+    vehicleId,
+    at: iso(minute),
+    odometerMiles: odometer,
+    latitude: spot.latitude,
+    longitude: spot.longitude,
+    shiftState: shift,
+    speedMph: shift === 'D' ? 40 : null,
+    state: 'online',
+    chargingState: null,
+    batteryLevel: 60,
+    cached: false,
+    source: 'test',
+  });
+
+  // First pass sees only the tail of the drive.
+  repo.insertSample(db, reading(10, 100, 'D', HOME));
+  repo.insertSample(db, reading(20, 112, 'D', WAREHOUSE));
+  repo.insertSample(db, reading(24, 112, 'P', WAREHOUSE));
+  repo.insertSample(db, reading(70, 112, 'P', WAREHOUSE));
+  rebuildTrips(db, vehicleId, '1970-01-01T00:00:00.000Z');
+
+  const first = repo.listTrips(db);
+  assert.equal(first.length, 1);
+  const original = first[0];
+  assert.ok(original);
+  decideTrip(db, original.id, { classification: 'business', purpose: 'Delivery' });
+
+  // A backfill supplies the beginning of that same drive.
+  repo.insertSample(db, reading(4, 96, 'P', HOME));
+  repo.insertSample(db, reading(7, 98, 'D', HOME));
+  rebuildTrips(db, vehicleId, '1970-01-01T00:00:00.000Z');
+
+  const after = repo.listTrips(db);
+  assert.equal(after.length, 1, 'one drive must remain one trip');
+  const merged = after[0];
+  assert.ok(merged);
+  // The odometer moved 96 -> 112, so the ledger must say 16 miles, not 28.
+  assert.equal(merged.distanceMiles, 16);
+  assert.equal(merged.startOdometerMiles, 96);
+  // And the owner's decision survived the correction.
+  assert.equal(merged.classification, 'business');
+  assert.equal(merged.locked, true);
+  assert.equal(merged.purpose, 'Delivery');
+});
+
+test('rebuilding after old readings are pruned does not erase the older trips', () => {
+  const { db, vehicleId } = fresh();
+  // One run of readings covering a drive today and another a month later, so the
+  // odometer climbs continuously the way a real car's does.
+  for (const sample of readings(vehicleId, [
+    { fromMinute: 0, toMinute: 25, from: HOME, to: WAREHOUSE, miles: 15 },
+    { fromMinute: 30 * 1440, toMinute: 30 * 1440 + 25, from: WAREHOUSE, to: HOME, miles: 10 },
+  ])) {
+    repo.insertSample(db, sample);
+  }
+  rebuildTrips(db, vehicleId, '1970-01-01T00:00:00.000Z');
+  assert.equal(repo.listTrips(db).length, 2);
+
+  // Retention prunes the older readings; trips are meant to be kept forever.
+  repo.pruneSamples(db, new Date(BASE + 29 * 1440 * 60_000).toISOString());
+  rebuildTrips(db, vehicleId, '1970-01-01T00:00:00.000Z');
+
+  const after = repo.listTrips(db);
+  assert.equal(after.length, 2, 'a trip whose readings were pruned must survive a rebuild');
+  assert.equal(
+    Math.round(after.reduce((sum, trip) => sum + trip.distanceMiles, 0)),
+    25,
+  );
+});
+
+test('a time zone Intl cannot parse is refused and never reaches rendering', () => {
+  const { db } = fresh();
+  const refused = writeSettings(db, { timezone: 'Mars/Olympus_Mons' });
+  assert.equal(refused.length, 1);
+  assert.match(refused[0] ?? '', /not a time zone name/);
+  assert.equal(readSettings(db).timezone, 'America/Chicago');
+
+  // Even if a bad value gets in some other way, reading settings must not throw.
+  db.putSetting('timezone', 'Nonsense/Zone');
+  assert.equal(readSettings(db).timezone !== 'Nonsense/Zone', true);
+  assert.doesNotThrow(() => readSettings(db));
 });

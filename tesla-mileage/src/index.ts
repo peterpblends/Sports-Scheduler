@@ -58,4 +58,11 @@ function shutdown(signal: string): void {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// A background failure must not take the ledger offline. Requests are each
+// wrapped in their own handler, and the poller retries on a backoff, so the
+// useful thing to do with a stray error is record it and keep serving.
 process.on('unhandledRejection', (reason) => log.error('unhandled rejection', reason));
+process.on('uncaughtException', (error) => {
+  log.error('uncaught exception — the app is still serving; please report this', error);
+});

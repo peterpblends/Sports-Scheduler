@@ -6,6 +6,7 @@
  * behave. Share links are handled first and are strictly read-only.
  */
 import { createServer, type Server } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { App } from '../app.ts';
 import * as repo from '../db/repo.ts';
 import { SETTING_KEYS, writeSettings, readSettings } from '../settings.ts';
@@ -27,14 +28,24 @@ import { seedDemoData } from '../tesla/demo.ts';
 import { storeRefreshToken } from '../tesla/client.ts';
 import { authorizeUrl, exchangeCode, registerPartnerAccount } from '../tesla/oauth.ts';
 import * as auth from './auth.ts';
+import { clientKey, RateLimiter, sameOrigin } from './guard.ts';
 import { SCRIPT, STYLESHEET, escape } from './ui.ts';
 import { dashboardPage, navFor, statusStrip, tripsPage, type ViewContext } from './views.ts';
-import { connectPage, exportPage, loginPage, placesPage, rulesPage, settingsPage } from './views-manage.ts';
+import {
+  connectPage,
+  exportPage,
+  loginPage,
+  morePage,
+  placesPage,
+  rulesPage,
+  settingsPage,
+} from './views-manage.ts';
 import { resolvePeriod } from './period.ts';
 import {
   download,
   html,
   intParam,
+  isSecureRequest,
   json,
   notFound,
   parseCookies,
@@ -90,9 +101,19 @@ function classificationFrom(form: URLSearchParams, name = 'classification'): Cla
   return raw !== null && isClassification(raw) ? raw : null;
 }
 
-function safeReturn(form: URLSearchParams, fallback: string): string {
+/**
+ * Only ever redirect to a path on this app.
+ *
+ * `//host` is protocol-relative, and browsers normalise a backslash to a slash,
+ * so `/\\host` escapes just as well. Control characters can smuggle a newline
+ * into the header. Anything but a plain single-slash path is refused.
+ */
+export function safeReturn(form: URLSearchParams, fallback: string): string {
   const target = form.get('return');
-  if (target === null || !target.startsWith('/') || target.startsWith('//')) return fallback;
+  if (target === null || target === '') return fallback;
+  if (!target.startsWith('/')) return fallback;
+  if (target.length > 1 && (target[1] === '/' || target[1] === '\\')) return fallback;
+  if (/[\u0000-\u001f\u007f\\]/.test(target)) return fallback;
   return target;
 }
 
@@ -103,12 +124,28 @@ function periodFromQuery(ctx: Ctx, timezone: string) {
   );
 }
 
+/**
+ * Settings that must never leave the machine in an export. The backup is a file
+ * people email to themselves and hand to accountants; the session-signing
+ * secret, the passcode hash and any stored credential have no business in it.
+ */
+const SECRET_SETTING = /secret|passcode|token|credential|password|oauth/i;
+
+export function publishableSettings(all: Record<string, string>): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (SECRET_SETTING.test(key)) continue;
+    safe[key] = value;
+  }
+  return safe;
+}
+
 /** Everything the JSON backup contains. */
 function backupPayload(app: App): unknown {
   const db = app.db;
   return {
     exportedAt: nowIso(),
-    settings: db.allSettings(),
+    settings: publishableSettings(db.allSettings()),
     vehicles: repo.listVehicles(db, true),
     places: repo.listPlaces(db),
     rules: repo.listRules(db),
@@ -133,11 +170,27 @@ function reportFor(app: App, period: ReturnType<typeof resolvePeriod>, includePe
     periodLabel: period.label,
     includeDetail: true,
     includePersonal,
+    // The report is the owner's document, so it follows their colour choice —
+    // which also happens to be the friendlier thing to send to a printer.
+    monochrome: settings.colour === 'mono',
   });
 }
 
+/** Content hash, computed once, so a browser can revalidate an asset cheaply. */
+function etagOf(body: string): string {
+  return `"${createHash('sha256').update(body).digest('base64url').slice(0, 20)}"`;
+}
+
+const ASSETS: Record<string, { body: string; type: string; etag: string }> = {
+  '/app.css': { body: STYLESHEET, type: 'text/css; charset=utf-8', etag: etagOf(STYLESHEET) },
+  '/app.js': { body: SCRIPT, type: 'text/javascript; charset=utf-8', etag: etagOf(SCRIPT) },
+};
+
 export function createHttpServer(app: App): Server {
-  const failures = new Map<string, { count: number; at: number }>();
+  // Wrong passcodes, writes, and share-link reads each get their own allowance.
+  const loginLimiter = new RateLimiter(8, 5 * 60_000);
+  const writeLimiter = new RateLimiter(240, 60_000);
+  const shareLimiter = new RateLimiter(120, 60_000);
 
   return createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
@@ -163,14 +216,20 @@ export function createHttpServer(app: App): Server {
       };
 
       // Static assets and health, no auth needed.
-      if (ctx.path === '/app.css') {
-        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'max-age=300' });
-        res.end(STYLESHEET);
-        return;
-      }
-      if (ctx.path === '/app.js') {
-        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'max-age=300' });
-        res.end(SCRIPT);
+      const asset = ASSETS[ctx.path];
+      if (asset !== undefined) {
+        if (req.headers['if-none-match'] === asset.etag) {
+          res.writeHead(304, { etag: asset.etag, 'cache-control': 'max-age=300, must-revalidate' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': asset.type,
+          'cache-control': 'max-age=300, must-revalidate',
+          etag: asset.etag,
+          'x-content-type-options': 'nosniff',
+        });
+        res.end(asset.body);
         return;
       }
       if (ctx.path === '/healthz') {
@@ -182,8 +241,25 @@ export function createHttpServer(app: App): Server {
       // them (creating, revoking) is the owner's business and stays behind the
       // session below, so only GETs are served here.
       if (ctx.path.startsWith('/share/') && ctx.method === 'GET') {
+        if (!shareLimiter.allow(clientKey(req))) {
+          text(res, 'Too many requests. Try again shortly.', 429);
+          return;
+        }
         await handleShare(ctx);
         return;
+      }
+
+      if (ctx.method === 'POST') {
+        if (!sameOrigin(req)) {
+          log.warn(`refused a cross-origin POST to ${ctx.path}`);
+          text(res, 'This request did not come from the app.', 403);
+          return;
+        }
+        if (!writeLimiter.allow(clientKey(req))) {
+          res.setHeader('retry-after', String(writeLimiter.retryAfterSeconds(clientKey(req))));
+          text(res, 'Too many requests. Try again shortly.', 429);
+          return;
+        }
       }
 
       const sessionOk =
@@ -201,28 +277,36 @@ export function createHttpServer(app: App): Server {
           return;
         }
         const form = await readForm(req);
-        const key = req.socket.remoteAddress ?? 'unknown';
-        const record = failures.get(key);
-        if (record !== undefined && record.count >= 8 && Date.now() - record.at < 300_000) {
-          html(res, loginPage({ error: 'Too many attempts. Wait five minutes and try again.' }), 429);
+        const key = clientKey(req);
+        if (!loginLimiter.allow(key)) {
+          app.db.audit('anonymous', 'auth.login.throttled', 'session', undefined, key);
+          html(
+            res,
+            loginPage({
+              error: `Too many attempts. Try again in ${loginLimiter.retryAfterSeconds(key)} seconds.`,
+            }),
+            429,
+          );
           return;
         }
         if (auth.checkPasscode(app.db, form.get('passcode') ?? '')) {
-          failures.delete(key);
+          loginLimiter.reset(key);
           setCookie(res, auth.sessionCookieName, auth.issueSession(app.db), {
             maxAgeSeconds: auth.sessionTtlSeconds,
+            secure: isSecureRequest(req),
           });
           app.db.audit('owner', 'auth.login');
           redirect(res, '/');
           return;
         }
-        failures.set(key, { count: (record?.count ?? 0) + 1, at: Date.now() });
+        app.db.audit('anonymous', 'auth.login.failed', 'session', undefined, key);
         html(res, loginPage({ error: 'That passcode did not match.' }), 401);
         return;
       }
 
       if (ctx.path === '/logout' && ctx.method === 'POST') {
-        setCookie(res, auth.sessionCookieName, '', { maxAgeSeconds: 0 });
+        setCookie(res, auth.sessionCookieName, '', { maxAgeSeconds: 0, secure: isSecureRequest(req) });
+        app.db.audit('owner', 'auth.logout');
         redirect(res, '/login');
         return;
       }
@@ -311,36 +395,23 @@ export function createHttpServer(app: App): Server {
 
       if (path === '/trips') {
         const placeId = intParam(ctx.query, 'place', 0);
-        if (placeId > 0) {
-          // Filtering by place is a separate, simpler view of the same list.
-          const trips = repo.listTrips(app.db, { placeId, limit: 200 });
-          const place = repo.getPlace(app.db, placeId);
-          const rates = repo.ratePeriods(app.db);
-          const summary = summarize(trips, { timezone: settings.timezone, rates });
-          html(
-            ctx.response,
-            tripsPage(
-              { ...view, flash: `Showing ${summary.totalTrips} trips involving ${place?.name ?? 'that place'}` },
-              {
-                period: resolvePeriod({ period: 'all' }, settings.timezone),
-                classification: 'all',
-                reviewOnly: false,
-                search: place?.name ?? '',
-                page: 1,
-              },
-            ),
-          );
-          return;
-        }
+        const place = placeId > 0 ? repo.getPlace(app.db, placeId) : null;
         const category = ctx.query.get('category') ?? 'all';
         html(
           ctx.response,
           tripsPage(view, {
-            period: periodFromQuery(ctx, settings.timezone),
+            // A place filter is most useful across all of history, so it widens
+            // the period unless one was asked for explicitly.
+            period:
+              place !== null && ctx.query.get('period') === null && ctx.query.get('from') === null
+                ? resolvePeriod({ period: 'all' }, settings.timezone)
+                : periodFromQuery(ctx, settings.timezone),
             classification: isClassification(category) ? category : 'all',
             reviewOnly: ctx.query.get('review') === '1',
             search: (ctx.query.get('q') ?? '').trim(),
             page: intParam(ctx.query, 'page', 1, 1, 10_000),
+            placeId: place === null ? undefined : place.id,
+            placeName: place === null ? undefined : place.name,
           }),
         );
         return;
@@ -423,6 +494,11 @@ export function createHttpServer(app: App): Server {
           `mile-ledger-backup-${localDate(nowIso(), settings.timezone)}.json`,
           'application/json',
         );
+        return;
+      }
+
+      if (path === '/more') {
+        html(ctx.response, morePage(view, { passcodeSet: auth.hasPasscode(app.db) }));
         return;
       }
 
@@ -707,11 +783,15 @@ export function createHttpServer(app: App): Server {
           const value = form.get(key);
           if (value !== null) patch[key] = value.trim();
         }
-        writeSettings(app.db, patch);
+        const refused = writeSettings(app.db, patch);
         const updated = readSettings(app.db);
         if (updated.timezone !== settings.timezone) reclassifyAll(app.db);
         app.rewireConnector();
-        redirect(ctx.response, '/settings', 'Settings saved.');
+        redirect(
+          ctx.response,
+          '/settings',
+          refused.length === 0 ? 'Settings saved.' : `Saved, except: ${refused.join(' ')}`,
+        );
         return;
       }
 
@@ -732,6 +812,26 @@ export function createHttpServer(app: App): Server {
           note: str(form, 'note') ?? 'Entered by hand',
         });
         redirect(ctx.response, '/settings', 'Rate saved. Exports will use it right away.');
+        return;
+      }
+
+      if (path === '/appearance') {
+        const appearance = form.get('appearance');
+        const colour = form.get('colour');
+        const patch: Record<string, string> = {};
+        if (appearance === 'system' || appearance === 'light' || appearance === 'dark') {
+          patch[SETTING_KEYS.appearance] = appearance;
+        }
+        if (colour === 'colour' || colour === 'mono') patch[SETTING_KEYS.colour] = colour;
+        writeSettings(app.db, patch);
+        const now = readSettings(app.db);
+        redirect(
+          ctx.response,
+          safeReturn(form, '/settings'),
+          `Appearance saved: ${now.appearance === 'system' ? 'following your device' : now.appearance}, ${
+            now.colour === 'mono' ? 'black and white' : 'full colour'
+          }.`,
+        );
         return;
       }
 

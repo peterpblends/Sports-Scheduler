@@ -49,6 +49,18 @@ its category: "Ends at Acme Warehouse, labeled business", "Rule: Saturdays are
 personal", "Classified by you". Those notes go into the export, so any number in
 the report can be traced back.
 
+**Reads well on a phone.** Not a desktop page shrunk down: a bottom bar with the
+most-used screens and Dashboard in the middle, fields that bring up the right
+keyboard, tap targets big enough to hit, and layouts checked at every width from
+a small phone to a wide desktop — in portrait and landscape, with the iPhone home
+indicator accounted for.
+
+**Works without colour.** A black-and-white mode for anyone who prefers it, needs
+it, or is printing. It is a real greyscale palette rather than a filter over the
+page, and nothing depends on colour to be understood: every category carries a
+glyph, a border style and its name, the chart uses texture and direct labels, and
+all four light/dark × colour/greyscale combinations meet WCAG AA contrast.
+
 **Exports properly.** A printable mileage log (open it, press print, save a PDF),
 a per-trip CSV with the date, miles, both ends, purpose, client, odometer
 readings and the reason for the category, and a monthly summary. Deductions are
@@ -58,6 +70,52 @@ year like 2026, when the business rate changed on July 1.
 **Gives your CPA a standing link.** Create a read-only link and send it. It
 always shows the current ledger, so there is no emailing a new file every month.
 It cannot change anything, and you can revoke it whenever you want.
+
+---
+
+## On a phone
+
+The bottom bar carries the four things you do between one drive and the next,
+with **Dashboard in the centre** and deliberately more prominent:
+
+```
+   Trips      Places    ( Dashboard )    Export      More
+   the list   labels    today's state    for the CPA  everything else
+```
+
+Everything not on the bar — rules, the car connection, settings, importing,
+appearance, signing out — lives on **More**, which is a real page rather than a
+pop-out menu, so the back button works and you can bookmark it. On a tablet or
+desktop the bar gives way to an ordinary row of tabs.
+
+The bar respects the home indicator on modern iPhones, gets out of the way when
+the keyboard opens, and shrinks in landscape where vertical space is scarce.
+
+## Appearance
+
+**Settings → Appearance**, or the same panel on **More**. Two independent
+choices:
+
+| Theme | Colour |
+|---|---|
+| Follow device · Light · Dark | Full colour · Black and white |
+
+The choice is stored in your ledger, not the browser, so it survives a refresh, a
+sign-out, a restart, and follows you to your phone. It is applied by the server
+when the page is built, so there is no flash of the wrong theme, and it carries
+through to the printable report — which is also the friendlier thing to send to a
+printer.
+
+Black and white is not a filter. It is a separate palette of strictly neutral
+greys, and because colour carries no meaning in it, nothing in the app depends on
+colour alone:
+
+- every category shows a glyph and its name (● business, ○ personal, ◐ commute, ? undecided)
+- category chips also differ by border style — solid, dashed, dotted, double
+- the API budget meter goes striped, not just red
+- the vehicle status dot changes shape, and the words beside it say the same thing
+- the chart's second series is a hatch texture, with values printed on the bars
+  and the same figures in a table underneath
 
 ---
 
@@ -195,7 +253,19 @@ free-tier always-on VM from a cloud provider, or a `launchd`/`systemd` service o
 a desktop that stays awake.
 
 If you expose it beyond your own machine, **set a passcode first** (Settings →
-Access). The app refuses non-local connections until you do.
+Access, or More → Access). The app refuses non-local connections until you do.
+
+What that gets you: the passcode is stored as a scrypt hash, the session is a
+signed cookie marked `Secure` behind HTTPS, repeated wrong guesses are throttled,
+writes are rejected if they did not come from the app's own pages, and every page
+is served under a Content-Security-Policy that forbids inline scripts. Set
+`MILE_LEDGER_SECRET` as well and your Tesla refresh token is encrypted at rest
+rather than sitting in the database in the clear.
+
+The accountant's share link is deliberately narrow: read-only, revocable, and it
+keeps working while the rest of the ledger stays locked. The JSON backup contains
+your trips and settings but never the session secret, the passcode hash, or any
+stored credential.
 
 ---
 
@@ -217,7 +287,7 @@ and your decisions are kept forever.
 ## For developers
 
 ```bash
-npm test          # 85 tests, no dependencies needed
+npm test          # 114 tests, no dependencies needed
 npm run typecheck # needs `npm install` for TypeScript itself
 ```
 
@@ -235,9 +305,21 @@ src/
   tesla/      connectors: Fleet API, owner API, CSV import, demo car
     poller.ts       adaptive cadence and the credit governor
   export/     summary math, CSVs, the printable report
+    summary.ts      totals from trip rows (the exports need the rows anyway)
+    aggregate.ts    the same totals from indexed SQL, for pages that only
+                    show numbers — held against summary.ts by tests
   web/        server-rendered UI, no framework, no bundle
+    ui.ts           the four palettes, the shell, form field helpers
+    chart.ts        inline-SVG chart that survives losing all colour
+    guard.ts        rate limiting and same-origin checks
+    auth.ts         passcode, sessions, share tokens
   db/         schema and typed queries over node:sqlite
 ```
+
+Money is handled in integer cents end to end, so a total never depends on the
+order things were added in. Both summary implementations round per trip and sum
+whole cents, and a test asserts they agree — including across a mid-year IRS rate
+change.
 
 The pieces that decide money are pure functions with tests: `stitch.ts`
 (distance), `classify.ts` (category), `rates.ts` and `export/summary.ts`

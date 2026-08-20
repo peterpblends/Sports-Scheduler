@@ -15,10 +15,28 @@ function emptyTotals(): Totals {
   return { trips: 0, miles: 0, deduction: 0 };
 }
 
-function add(totals: Totals, miles: number, deduction: number): void {
+/**
+ * Accumulate at full precision and round once, at the end.
+ *
+ * Rounding as you go compounds the error: three 0.05-mile hops rounded to a
+ * tenth each become 0.3 instead of 0.2. Distances are stored to three decimals,
+ * so that mattered.
+ *
+ * Money is different again, and it is handled as integer cents. Each trip's
+ * deduction is rounded to a whole cent — those per-trip amounts are what the CSV
+ * prints, and an accountant adding the column up has to reach the total on the
+ * report — and whole cents then sum exactly. Adding dollars as floating point
+ * instead leaves totals that land on a half cent at the mercy of rounding noise,
+ * which is how the same drive can be worth a cent more depending on the order it
+ * was added in.
+ *
+ * While a pass is running, `deduction` holds integer cents. `finalize` converts
+ * it to dollars, and every caller sees dollars.
+ */
+function add(totals: Totals, miles: number, deductionCents: number): void {
   totals.trips += 1;
-  totals.miles = round(totals.miles + miles);
-  totals.deduction = round2(totals.deduction + deduction);
+  totals.miles += miles;
+  totals.deduction += deductionCents;
 }
 
 function round(value: number): number {
@@ -27,6 +45,12 @@ function round(value: number): number {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function finalize(totals: Totals): Totals {
+  totals.miles = round(totals.miles);
+  totals.deduction = round2(totals.deduction / 100);
+  return totals;
 }
 
 export type MonthRow = {
@@ -87,7 +111,7 @@ export function summarize(
   const ratesApplied = new Map<string, { note: string; from: string; to: string; businessCents: number }>();
 
   let totalMiles = 0;
-  let deduction = 0;
+  let deductionCents = 0;
   let unclassifiedTrips = 0;
   let reviewTrips = 0;
   let inferredTrips = 0;
@@ -97,14 +121,15 @@ export function summarize(
   for (const trip of trips) {
     const date = localDate(trip.startedAt, timezone);
     const { cents, period } = rateCents(date, trip.classification, rates);
-    const tripDeduction = round2((trip.distanceMiles * cents) / 100);
+    // Whole cents, so the sums below are exact.
+    const tripDeductionCents = Math.round(trip.distanceMiles * cents);
 
     const bucket = byClassification[trip.classification] ?? emptyTotals();
-    add(bucket, trip.distanceMiles, tripDeduction);
+    add(bucket, trip.distanceMiles, tripDeductionCents);
     byClassification[trip.classification] = bucket;
 
-    totalMiles = round(totalMiles + trip.distanceMiles);
-    deduction = round2(deduction + tripDeduction);
+    totalMiles += trip.distanceMiles;
+    deductionCents += tripDeductionCents;
     if (trip.classification === 'unclassified') unclassifiedTrips += 1;
     if (trip.needsReview) reviewTrips += 1;
     if (trip.inferred) inferredTrips += 1;
@@ -134,8 +159,8 @@ export function summarize(
             : trip.classification === 'unclassified'
               ? row.unclassified
               : row.other;
-    add(target, trip.distanceMiles, tripDeduction);
-    row.totalMiles = round(row.totalMiles + trip.distanceMiles);
+    add(target, trip.distanceMiles, tripDeductionCents);
+    row.totalMiles += trip.distanceMiles;
     months.set(monthKey, row);
 
     if (trip.classification === 'business') {
@@ -143,8 +168,8 @@ export function summarize(
       if (clientName !== '') {
         const entry = clients.get(clientName) ?? { name: clientName, trips: 0, miles: 0, deduction: 0 };
         entry.trips += 1;
-        entry.miles = round(entry.miles + trip.distanceMiles);
-        entry.deduction = round2(entry.deduction + tripDeduction);
+        entry.miles += trip.distanceMiles;
+        entry.deduction += tripDeductionCents;
         clients.set(clientName, entry);
       }
 
@@ -153,8 +178,8 @@ export function summarize(
         const entry =
           destinations.get(destination) ?? { name: destination, trips: 0, miles: 0, deduction: 0 };
         entry.trips += 1;
-        entry.miles = round(entry.miles + trip.distanceMiles);
-        entry.deduction = round2(entry.deduction + tripDeduction);
+        entry.miles += trip.distanceMiles;
+        entry.deduction += tripDeductionCents;
         destinations.set(destination, entry);
       }
 
@@ -168,6 +193,23 @@ export function summarize(
       }
     }
   }
+
+  // Round everything now that the sums are complete.
+  for (const totals of Object.values(byClassification)) finalize(totals);
+  for (const row of months.values()) {
+    finalize(row.business);
+    finalize(row.personal);
+    finalize(row.commute);
+    finalize(row.other);
+    finalize(row.unclassified);
+    row.totalMiles = round(row.totalMiles);
+  }
+  for (const entry of [...clients.values(), ...destinations.values()]) {
+    entry.miles = round(entry.miles);
+    entry.deduction = round2(entry.deduction / 100);
+  }
+  totalMiles = round(totalMiles);
+  const deduction = round2(deductionCents / 100);
 
   const businessMiles = byClassification.business?.miles ?? 0;
 
