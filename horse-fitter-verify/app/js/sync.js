@@ -38,7 +38,10 @@ export function createSync({ getConfig, onChange = () => {}, onStatus = () => {}
         ...opts, signal: ctl.signal, cache: "no-store",
         headers: { "content-type": "application/json", ...(syncToken ? { authorization: "Bearer " + syncToken } : {}), ...(opts.headers || {}) },
       });
-      if (r.status === 401 || r.status === 403) throw Object.assign(new Error("Sync server refused the access token"), { auth: true });
+      if (r.status === 401 || r.status === 403) {
+        throw Object.assign(new Error(syncToken ? "The sync server refused the access token. Check it in Settings → Sync."
+          : "This sync server needs an access token. Enter it in Settings → Sync."), { auth: true });
+      }
       if (!r.ok) throw new Error(`Sync server answered ${r.status}`);
       return await r.json();
     } finally { clearTimeout(to); }

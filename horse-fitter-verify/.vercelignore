@@ -1,0 +1,6 @@
+data/
+tests/
+scripts/
+server.py
+Dockerfile
+*.db

@@ -49,6 +49,19 @@ Sessions are saved on the device (IndexedDB) the moment they're captured. The de
   The barn server queues sessions and forwards them whenever it has internet. It also pulls down changes made elsewhere, such as edits in the office.
 - A device can also sync straight to the cloud. Put the address and token in Settings → Sync.
 
+### Deploying the cloud copy to Vercel (hfv.zicaworld.com)
+
+The repo deploys to Vercel as-is. The static app is served from `app/`, and `api/` holds two serverless functions (`/api/health`, `/api/sessions`) that speak the same sync protocol as `server.py`, backed by Upstash Redis because Vercel has no persistent disk.
+
+1. **Import:** Vercel → Add New → Project → import the GitHub repo. If the app sits in a subfolder, set **Root Directory** to `horse-fitter-verify`. Leave Framework Preset as **Other** with no build command.
+2. **Database:** Project → Storage → Create/Connect → **Upstash for Redis** (free tier is plenty), then connect it to the project. This sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+3. **Token:** Project → Settings → Environment Variables → add `HFV_TOKEN` with a long random value (e.g. `openssl rand -hex 24`). Sync is refused until this is set.
+4. **Redeploy** so the functions pick up the variables. `https://<project>.vercel.app/api/health` should show `"storage":"ok"` and `"tokenConfigured":true`.
+5. **Domain:** Project → Settings → Domains → add `hfv.zicaworld.com`. At the DNS host for zicaworld.com, add the record Vercel shows, normally `CNAME hfv → cname.vercel-dns.com` (use the exact value Vercel displays).
+6. **Connect the barn:** `python3 server.py --upstream https://hfv.zicaworld.com --upstream-token <HFV_TOKEN>`. Devices that opened the app from hfv.zicaworld.com need the token in Settings → Sync.
+
+Every push to the connected branch redeploys automatically. Remember that the HTTPS copy can't stream the mat (mixed content). Use it for installing the app, reviewing reports and backup. Capture at the barn through `server.py`.
+
 Conflicts resolve last-writer-wins per session. Deletions sync as tombstones. Raw frames stay on the capturing device; the summaries, mean/peak maps and verdicts are what sync. **Export session** includes the raw frames.
 
 ### Offline app / install
@@ -81,6 +94,7 @@ python3 server.py -v   # serve with request logging
 | `app/js/sync.js` | Push/pull sync client |
 | `app/sw.js` | Offline app shell, background sync |
 | `server.py` | Static server, mat proxy, sync API (SQLite), upstream forwarding |
+| `api/`, `vercel.json` | Vercel deployment: sync API on Upstash Redis |
 | `scripts/make-icons.mjs` | Regenerates PNG icons from the SVG |
 
 Sync API: `POST /api/sessions` (upsert, returns `{status:"ok"}` or `{status:"stale", session}`), `GET /api/sessions?since=<cursor>` (changes after a server-side change counter), `GET /api/health`.
