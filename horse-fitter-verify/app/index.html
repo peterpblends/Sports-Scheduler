@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141A22">
+<meta name="description" content="Pressure-mat saddle and rider fit verification. Works offline, syncs when a connection is available.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fit Verify">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="css/app.css">
+<title>Horse Fitter Verify</title>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="28" height="28"><h1>Horse Fitter Verify</h1></div>
+    <div class="pills">
+      <span class="pill" id="matPill" title="Mat connection"><span class="dot" id="dot"></span><span id="matText">Mat off</span></span>
+      <button class="pill" id="syncPill" type="button" title="Sync now"><span class="sdot" id="syncDot"></span><span id="syncText">Sync</span></button>
+    </div>
+  </header>
+  <div class="recbar" id="recBar" hidden>
+    <span class="dot rec"></span><span id="recText">Recording</span>
+    <button id="recBarStop" type="button">Stop</button>
+  </div>
+
+  <nav class="tabs" aria-label="Sections">
+    <button type="button" data-view="live" class="on">Live</button>
+    <button type="button" data-view="check">Fit check</button>
+    <button type="button" data-view="sessions">Sessions</button>
+    <button type="button" data-view="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- LIVE -->
+    <section class="view grid2" id="view-live">
+      <div class="stage card">
+        <div class="maphead"><span>▲ Front (withers)</span></div>
+        <div class="mapwrap">
+          <span class="side-l">L</span>
+          <div class="canvasbox">
+            <canvas id="liveMap" class="map" aria-label="Live pressure map"></canvas>
+            <div class="empty" id="liveEmpty">
+              <p>Join the mat's WiFi, then tap <b>Connect</b>.</p>
+              <p>Or run the demo to try every screen without the mat.</p>
+            </div>
+          </div>
+          <span class="side-r">R</span>
+        </div>
+        <div class="maphead"><span>▼ Back (cantle)</span></div>
+        <div class="scale"><span>0</span><div class="bar" id="scaleBar"></div><span id="scaleMax">—</span></div>
+      </div>
+
+      <div class="side">
+        <div class="card">
+          <h2>Connection</h2>
+          <label class="field">Mat address
+            <input type="text" id="matUrl" inputmode="url" autocapitalize="off" spellcheck="false">
+          </label>
+          <label class="toggle" id="viaServerRow" hidden><input type="checkbox" id="viaServer"> Connect through this server</label>
+          <div class="row">
+            <button class="primary" id="btnConnect" type="button">Connect</button>
+            <button id="btnDemo" type="button">Demo</button>
+          </div>
+          <label class="field">Demo scenario
+            <select id="demoScenario"></select>
+          </label>
+          <p class="msg" id="matMsg" hidden></p>
+          <p class="hint" id="fpsHint">Grid: — · 0 fps</p>
+        </div>
+
+        <div class="card">
+          <h2>Live readout</h2>
+          <div class="meter">
+            <div class="meter-label"><span>Left <b id="rLeft">—</b></span><span>Right <b id="rRight">—</b></span></div>
+            <div class="split"><i id="barLeft" style="width:50%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="meter-label"><span>Front <b id="rFront">—</b></span><span>Mid <b id="rMid">—</b></span><span>Back <b id="rBack">—</b></span></div>
+            <div class="tri"><i id="barFront"></i><i id="barMid"></i><i id="barBack"></i></div>
+          </div>
+          <div class="stats">
+            <div class="stat"><b id="rChannel">—</b><span>On spine channel</span></div>
+            <div class="stat"><b id="rPeak">—</b><span>Peak</span></div>
+            <div class="stat"><b id="rArea">—</b><span>Contact area</span></div>
+            <div class="stat"><b id="rMean">—</b><span>Mean contact</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Display</h2>
+          <label class="field">Colour range top: <span id="topLabel">auto</span>
+            <input type="range" id="colorTop" min="0" max="100" value="0">
+          </label>
+          <label class="field">Contact threshold: <span id="thrLabel">0</span>
+            <input type="range" id="threshold" min="0" max="50" step="0.5" value="0">
+          </label>
+          <label class="toggle"><input type="checkbox" id="smooth"> Smooth</label>
+          <label class="toggle"><input type="checkbox" id="guides"> Guides (thirds, centre line, spine channel)</label>
+          <label class="toggle"><input type="checkbox" id="showCop"> Centre of pressure</label>
+          <div class="row"><button id="btnCsv" type="button" disabled>Frame → CSV</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FIT CHECK -->
+    <section class="view" id="view-check" hidden>
+      <div id="checkSetup" class="narrow">
+        <form class="card" id="setupForm" autocomplete="off">
+          <h2>New fit check</h2>
+          <div class="formgrid">
+            <label class="field">Horse<input type="text" name="horse" required placeholder="Name"></label>
+            <label class="field">Rider<input type="text" name="rider" placeholder="Name"></label>
+            <label class="field">Saddle<input type="text" name="saddle" placeholder="Make and model"></label>
+            <label class="field">Size / tree<input type="text" name="saddleSize" placeholder="e.g. 17.5in, medium-wide"></label>
+            <label class="field">Pad / shims<input type="text" name="pad" placeholder="e.g. sheepskin half pad, front shims"></label>
+            <label class="field">Fitter<input type="text" name="fitter" placeholder="Your name"></label>
+            <label class="field full">Location<input type="text" name="location" placeholder="Yard / arena"></label>
+            <label class="field full">Notes<textarea name="notes" rows="2" placeholder="Anything worth remembering"></textarea></label>
+          </div>
+          <div class="row"><button class="primary" type="submit">Start fit check</button></div>
+          <p class="hint">Saved on this device as you go. Syncs automatically when a sync server is reachable.</p>
+        </form>
+      </div>
+
+      <div id="checkActive" class="grid2" hidden>
+        <div class="stage card">
+          <div class="sessionhead" id="checkHead"></div>
+          <div class="maphead"><span>▲ Front</span></div>
+          <div class="mapwrap">
+            <span class="side-l">L</span>
+            <div class="canvasbox">
+              <canvas id="checkMap" class="map" aria-label="Live pressure map"></canvas>
+              <div class="empty" id="checkEmpty"><p>No frames yet. Connect the mat or start the demo on the Live tab.</p></div>
+              <div class="countdown" id="countdown" hidden></div>
+            </div>
+            <span class="side-r">R</span>
+          </div>
+          <div class="maphead"><span>▼ Back</span></div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h2>Capture phases</h2>
+            <p class="hint">Record each phase. Each capture is analysed as soon as it stops.</p>
+            <ol class="phases" id="phaseList"></ol>
+            <details class="addphase">
+              <summary>Add a phase</summary>
+              <form id="addPhaseForm" class="formgrid">
+                <label class="field full">Label<input type="text" name="label" required placeholder="e.g. Trot, after shim change"></label>
+                <label class="field">Type
+                  <select name="kind"><option value="halt">Rider at halt</option><option value="moving">Rider in motion</option><option value="saddle">Saddle only</option></select>
+                </label>
+                <label class="field">Seconds<input type="number" name="seconds" min="3" max="300" value="30"></label>
+                <div class="row full"><button type="submit">Add phase</button></div>
+              </form>
+            </details>
+          </div>
+          <div class="row">
+            <button id="btnReport" class="primary" type="button">View report</button>
+            <button id="btnCloseCheck" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SESSIONS -->
+    <section class="view" id="view-sessions" hidden>
+      <div id="sessionsList" class="narrow">
+        <div class="row toolbar">
+          <input type="search" id="search" placeholder="Search horse, rider, saddle…" aria-label="Search sessions">
+          <button id="btnImport" type="button">Import…</button>
+          <input type="file" id="fileIn" accept="application/json,.json" hidden>
+        </div>
+        <ul class="list" id="sessionItems"></ul>
+      </div>
+      <div id="report" hidden></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings" hidden>
+      <div class="narrow settings">
+        <div class="card">
+          <h2>Sync</h2>
+          <label class="toggle"><input type="checkbox" id="syncEnabled"> Sync sessions when a server is reachable</label>
+          <label class="field">Sync server <span class="hint">(blank = the server this app was opened from)</span>
+            <input type="text" id="syncUrl" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="https://fit.example.com">
+          </label>
+          <label class="field">Access token <span class="hint">(if the server requires one)</span>
+            <input type="password" id="syncToken" autocomplete="off">
+          </label>
+          <div class="row"><button id="btnSyncNow" type="button" class="primary">Sync now</button></div>
+          <p class="hint" id="syncDetail"></p>
+        </div>
+
+        <div class="card">
+          <h2>Mat orientation</h2>
+          <p class="hint">Which edge of the mat sits at the withers. Check with the live map: the front of the saddle should be at the top.</p>
+          <label class="field">Withers at mat's
+            <select id="withers"><option value="top">Top edge (row 1)</option><option value="bottom">Bottom edge</option><option value="left">Left edge (column 1)</option><option value="right">Right edge</option></select>
+          </label>
+          <label class="toggle"><input type="checkbox" id="mirror"> Swap left and right</label>
+        </div>
+
+        <div class="card">
+          <h2>Analysis</h2>
+          <label class="field">Pressure units label <span class="hint">(display only; blank if the mat sends raw counts)</span>
+            <input type="text" id="units" placeholder="e.g. kPa, mmHg">
+          </label>
+          <label class="field">Spine channel width (% of mat width)
+            <input type="number" id="channelWidth" min="0" max="50" step="1">
+          </label>
+          <label class="field">Hotspot limit, absolute <span class="hint">(0 = relative)</span>
+            <input type="number" id="hotspotAbs" min="0" step="0.5">
+          </label>
+          <label class="field">Hotspot limit, relative (× mean loaded pressure)
+            <input type="number" id="hotspotRel" min="1" step="0.1">
+          </label>
+          <label class="toggle"><input type="checkbox" id="keepFrames"> Keep raw frames on this device (for replay and re-analysis)</label>
+        </div>
+
+        <div class="card">
+          <h2>Verdict thresholds</h2>
+          <p class="hint">Starting points, not clinically validated limits. Tune them to your mat and your own fitting standards.</p>
+          <table class="rules" id="rulesTable"><thead><tr><th>Check</th><th>Caution</th><th>Fail</th></tr></thead><tbody></tbody></table>
+          <div class="row"><button id="btnRulesReset" type="button">Reset to defaults</button></div>
+        </div>
+
+        <div class="card">
+          <h2>This device</h2>
+          <p class="hint" id="deviceInfo"></p>
+          <div class="row">
+            <button id="btnInstall" type="button" hidden>Install app</button>
+            <button id="btnExportAll" type="button">Export all sessions</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "Horse Fitter Verify",
+  "short_name": "Fit Verify",
+  "description": "Pressure-mat saddle and rider fit verification. Works offline, syncs when a connection is available.",
+  "id": "./",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141A22",
+  "theme_color": "#141A22",
+  "categories": ["utilities", "sports", "health"],
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
